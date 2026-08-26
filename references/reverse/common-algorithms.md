@@ -461,9 +461,41 @@ def ecc_transfer_attack(G, kG):
 
 def ecc_fault_attack():
     """故障攻击 — 利用计算错误"""
-    # 在签名过程中注入故障
-    # 通过两个不同签名恢复私钥
-    pass
+    # ECDSA 故障攻击: 当签名过程中发生故障时，攻击者可获取
+    # 两个共享相同 nonce k 的签名 (相同 r), 从而恢复私钥
+    #
+    # 正确签名: s = k^{-1}(z + r*d) mod n
+    # 故障签名: s' = k^{-1}(z' + r*d) mod n  (z' 因故障改变)
+    # 两式相减: k*(s - s') = z - z'  =>  k = (z - z') * (s - s')^{-1}
+    # 然后:     d = (s*k - z) * r^{-1} mod n
+
+    n = 233  # 曲线阶 (演示用小素数)
+
+    # --- 模拟签名过程 ---
+    d = 42            # 私钥 (未知于攻击者)
+    k = 77            # nonce
+    r = k % n         # 简化: 实际 r = x(kG) mod n
+    z = 150           # 消息哈希值
+
+    # 正常签名
+    s = (pow(k, -1, n) * (z + r * d)) % n
+    print(f"[*] 正常签名: r={r}, s={s}")
+
+    # 故障签名 — 故障导致哈希值变为 z'
+    z_fault = 120
+    s_fault = (pow(k, -1, n) * (z_fault + r * d)) % n
+    print(f"[*] 故障签名: r={r}, s'={s_fault}")
+
+    # --- 攻击: 从两个签名恢复私钥 ---
+    delta_s = (s - s_fault) % n
+    delta_z = (z - z_fault) % n
+    k_recovered = (delta_z * pow(delta_s, -1, n)) % n
+    d_recovered = ((s * k_recovered - z) * pow(r, -1, n)) % n
+
+    print(f"[*] 恢复 nonce k: {k_recovered}")
+    print(f"[*] 恢复私钥 d: {d_recovered}")
+    assert d_recovered == d, "私钥恢复失败!"
+    print("[+] 故障攻击成功, 私钥已恢复!")
 
 # 使用 sympy 进行椭圆曲线计算
 from sympy import mod_inverse, sqrt_mod

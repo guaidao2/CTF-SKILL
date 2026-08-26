@@ -278,8 +278,8 @@ for url in targets:
         r = requests.get(url, timeout=3)
         if r.status_code == 200:
             print(f"[+] {url} 可访问")
-    except:
-        pass
+    except Exception as e:
+        print(f"[-] {url} 不可达: {e}")
 PYEOF
 ```
 
@@ -408,8 +408,8 @@ iam = session.client('iam')
 try:
     policies = iam.list_attached_user_policies(UserName='target').get('AttachedPolicies', [])
     print(f"[+] 发现 {len(policies)} 个附加策略")
-except:
-    pass
+except Exception as e:
+    print(f"[-] 无法枚举策略: {e}")
 
 # 尝试创建后门用户
 try:
@@ -507,8 +507,8 @@ for line in sys.stdin.buffer:
             data = json.loads(line)
             print(f'Namespace: {data.get(\"namespace\", \"unknown\")}')
             print(f'Name: {data.get(\"metadata\", {}).get(\"name\", \"unknown\")}')
-        except:
-            pass
+        except Exception:
+            continue
 "
 
 # 使用 kubelet 读取 Pod 中挂载的 etcd 证书并访问 etcd

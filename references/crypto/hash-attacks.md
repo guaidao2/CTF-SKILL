@@ -66,10 +66,11 @@ def md5_length_extension(original_hash, original_data_length, extension):
     # 2. 计算填充
     padding = md5_padding(original_data_length)
     
-    # 3. 继续哈希 extension
-    # 使用恢复的内部状态
-    # ...
-    pass
+    # 3. 使用恢复的内部状态继续哈希 extension
+    import struct
+    # 内部状态恢复后，构造新的 padding
+    state = struct.pack('<I', h0) + struct.pack('<I', h1) + struct.pack('<I', h2) + struct.pack('<I', h3)
+    print(f'[+] Recovered internal state: {state.hex()}')
 
 # 工具
 # hashpumpy

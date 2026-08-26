@@ -767,15 +767,22 @@ def deposit():
     self.balances[msg.sender] += msg.value
 
 # 多锁模式（不同 key 可以并行）
+# "deposit_lock" 和 "withdraw_lock" 是不同的 key
+# 同一 key 的函数互斥，不同 key 的函数可以并行执行
 @external
 @nonreentrant("deposit_lock")
 def complex_deposit():
-    pass
+    assert msg.value > 0, "必须发送 ETH"
+    self.balances[msg.sender] += msg.value
+    log Deposit(msg.sender, msg.value)
 
 @external
 @nonreentrant("withdraw_lock")
-def complex_withdraw():
-    pass
+def complex_withdraw(amount: uint256):
+    assert self.balances[msg.sender] >= amount, "余额不足"
+    self.balances[msg.sender] -= amount
+    send(msg.sender, amount)
+    log Withdraw(msg.sender, amount)
 ```
 
 ## 工具推荐

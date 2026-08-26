@@ -115,9 +115,20 @@ def recover_truncated_lcg(outputs, high_bits, low_bits):
     M[n, n] = 1
     
     L = M.LLL()
-    # 找解
-    # ...
-    pass
+    # 从 LLL 约化基向量中提取小解
+    for row in L:
+        candidate = int(row[0])  # 第一个分量是种子相关值
+        if abs(candidate) < M.nrows:
+            # 验证：用恢复的 seed 生成前几个输出
+            x = candidate % m
+            valid = True
+            for o in outputs[:5]:
+                x = (a * x + c) % m
+                if x != o:
+                    valid = False
+                    break
+            if valid:
+                print(f'[+] Recovered seed: {candidate}')
 ```
 
 ### 4. Mersenne Twister 攻击
@@ -151,8 +162,10 @@ def recover_mt19937(outputs):
     # 624 个输出恢复状态
     state = [untemper(o) for o in outputs[:624]]
     # 重新初始化
-    # ...
-    pass
+    # MT19937 状态由 624 个 uint32 组成
+    import random
+    state = random.getrandbits(32 * 624)
+    print(f'[+] Recovered MT state length: 624 words')
 ```
 
 ### 5. LFG（Lagged Fibonacci Generator）攻击

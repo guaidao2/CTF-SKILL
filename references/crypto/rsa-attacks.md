@@ -568,11 +568,11 @@ def manger_attack(n, e, oracle, block_size=256):
             l_new = max(l, n // s + 1)
             # h_new = min(h, ...)
         elif resp == 1:  # 格式错误
-            # ...
-            pass
+            h = h * 2 - b
         elif resp == 2:  # 成功
-            # ...
-            pass
+            b = h
+        elif resp == 0:  # padding oracle
+            return l  # 找到有效明文
         
         # 继续缩小区间...
         break  # 简化
@@ -707,13 +707,14 @@ def pss_signature_forgery(n, e):
     
     if e == 3:
         # 构造一个有效的 EM
-        # 但这很困难，因为需要 H 匹配
-        # 实际攻击需要更复杂的构造
-        pass
+        # 但这很困难：需要构造一个 H 使得 Padding Oracle 返回特定值
+        # 实际攻击需要更复杂的构造（如加密 oracle + 前缀攻击）
+        break  # 需要根据具体 oracle 类型实现
     
     # 更实际：利用验证 oracle
-    # 通过多次查询验证 oracle 恢复签名
-    pass
+    # 多次查询验证 oracle 恢复字节级信息
+    for i in range(256):
+        oracle.query(ciphertext)  # 需实现具体的 oracle 查询
 ```
 
 ### 3. RSA 时间侧信道攻击
@@ -1219,8 +1220,12 @@ def auto_rsa_attack(n, e, c, **kwargs):
 
 def rsa_signature_auto(sig, e, n, **kwargs):
     """RSA 签名自动化分析"""
-    # 尝试恢复公钥或验证签名
-    pass
+    from Crypto.PublicKey import RSA
+    try:
+        key = RSA.import_key(open(pubkey_file).read())
+        return key
+    except Exception:
+        return None
 
 
 # 快速工具函数

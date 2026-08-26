@@ -126,19 +126,19 @@ ropper --file ./pwn --search "pop rdi"
 | 2.27 | tcache double free 检测（弱） |
 | 2.29 | tcache 加 key 字段 |
 | 2.31 | tcache key 加强 |
-| 2.32 | hook 移除（`__malloc_hook` 等） |
-| 2.34 | 完全移除 hooks，引入新机制 |
+| 2.32 | hooks 弃用 (`__malloc_hook` 等标记 deprecated)；safe-linking 引入 |
+| 2.34 | 完全移除 hooks (`__malloc_hook`/`__free_hook` 不可用)；House of Apple 利用时代 |
 | 2.35+ | 进一步加固 |
 | 2.36+ | tcache 检测加强 |
-| 2.37+ | safe-linking |
+| 2.37+ | 进一步加固 |
 | 2.38+ | 进一步加固 |
 | 2.39+ | 最新版本 |
 
 ## 2024-2026 Pwn 新趋势
 
-- **glibc 2.34+ 无 hooks**：传统 `__malloc_hook`/`__free_hook` 利用失效，需用 IO_FILE、`exit_funcs`、`_environ` 等
+- **glibc 2.34+ 无 hooks**：`__malloc_hook`/`__free_hook` 在 2.34 被移除，需用 IO_FILE、`exit_funcs`、`_environ` 等
+- **safe-linking (2.32+)**：tcache/fastbin 指针加密 `(chunk_addr >> 12) ^ next`
 - **House of Apple 系列**：针对 glibc 2.34+ 的新利用链
-- **safe-linking**：tcache/fastbin 指针加密
 - **TLS 利用**：通过 `_environ`、`__stack_chk_guard` 等 TLS 变量
 - **exit_funcs 利用**：通过 `__exit_funcs` 实现 RCE
 - **per-thread cache 加固**：tcache key 检测加强

