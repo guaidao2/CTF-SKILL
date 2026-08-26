@@ -252,6 +252,45 @@ $p->setStub('<?php __HALT_COMPILER();');
 phar://shell.phar
 ```
 
+### 12. 扩展名判定不一致绕过（首点 vs 末点 / 过滤-解析分歧）
+
+**触发条件**：服务端（Apache+PHP）只把精确 `.php` 当 PHP 解析，WAF 用扩展名黑名单拦截；
+且所有备用扩展名（`.phtml/.phps/.inc` 等）实测都不执行、`.htaccess` 被拦、`.user.ini` 无同级
+`.php` 触发 —— 即"能传的不执行，能执行的被拦"的死局时，优先怀疑 **WAF 与解析器对
+"扩展名从哪个点开始"的判定基准不一致**。
+
+**原理**（WAF 提取逻辑为反推/常见实现假设，非源码确认）：
+- WAF 常见写法：`substr($name, strpos($name,'.')+1)` 或 `explode('.', $name)[1]` —— 取**第一个**点之后的串。
+- 解析器（Apache `FilesMatch "\.php$"` / PHP `PATHINFO_EXTENSION`）—— 只看**最后一个**点之后的串。
+- 当文件名开头出现连续点（如 `..php`），两者切出的"扩展名"不同：
+  - WAF 取首点之后 → `.php`（带前导点）→ 与黑名单纯名 `php` 比对 → 不匹配 → **放行**
+  - 解析器取末点之后 → `php` → **按 PHP 解析执行**
+- 结果：文件被 WAF 放行，却被解析器执行 → RCE。
+
+**载荷**：
+```
+name=..php        # 首点分隔，最典型
+name=...php       # 多变体，原理相同
+name=.shell.php   # 首字符为点，首点切出 .shell.php，末点切出 php
+```
+> 注：`.php`（单点开头、无名字部分）通常**不绕过**，因部分实现下 `pathinfo('.php')` 的 EXTENSION 为空；
+> 关键是"首点 ≠ 末点"，即文件名里至少两个点时，名字部分与扩展名分隔所用的点不是同一个。
+
+**验证（防假阳性，必做）**：
+上传后必须确认 PHP **真的执行**，而非"文件传上去了"：
+- 用运行时才计算、源码里不存在的标记，例如 `<?php echo "X".(7*6)."Y"; ?>` —— 仅执行才输出 `X42Y`。
+- 严禁用写死的串（如 `<?php echo "EXEC";?>` 后 grep "EXEC"）验证，会误判为已执行。
+- `curl -i` 看 `Content-Type`：真执行为 `text/html` 且含 `X42Y`；静态返回 `text/plain` 即未执行。
+
+**防御（正确写法）**：
+```php
+$name = basename($_FILES['file']['name']);                    // 先剥路径
+$ext  = strtolower(pathinfo($name, PATHINFO_EXTENSION));     // 取末点扩展名并小写归一
+$ext  = trim($ext, ". \t\n\r\0\x0B");                        // 去首尾点/空白
+if (in_array($ext, ['php','php3','php4','php5','php7','pht','phtml','htaccess'], true)) die("blocked");
+```
+核心：过滤与解析必须用**同一套**取扩展名逻辑（统一 `pathinfo`/末点 + 小写归一 + 去首尾点），消除首点/末点分歧。
+
 ## 2024-2026 新技术点
 
 ### 1. PHP 8.x 新特性
