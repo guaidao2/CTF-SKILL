@@ -16,19 +16,16 @@
 
 ## 使用方式
 
-### 安装到 Reasonix
+### 安装到 AI Agent Skill 目录
 
 ```bash
-# 方式1: 直接拷贝
-cp -r ctf/ ~/.reasonix/skills/ctf/
-
-# 方式2: 通过 reasonix 安装
-install_source --source ./ctf --mode link --scope global
+# 直接拷贝到你的 skill 目录 (路径按实际环境调整)
+cp -r ctf/ <your-skill-dir>/ctf/
 ```
 
 ### 自动触发
 
-安装后，当用户涉及 CTF 比赛、漏洞利用、payload 构造、绕过防护等场景时，reasonix 会自动加载此 skill。
+安装后，当用户涉及 CTF 比赛、漏洞利用、payload 构造、绕过防护等场景时，AI agent 会自动加载此 skill。
 
 ### 工作流
 
