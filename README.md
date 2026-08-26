@@ -112,4 +112,4 @@ python scripts/crypto_helper.py
 
 ## 许可
 
-仅供 CTF 比赛和授权渗透测试使用。
+[Apache License 2.0](LICENSE) — 仅供 CTF 比赛和授权渗透测试使用。
