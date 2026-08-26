@@ -14,6 +14,7 @@ Pwn 是 CTF 中技术门槛最高的方向之一，涉及二进制漏洞利用�
 | glibc 2.23-2.25、fastbin 机制 | fastbin 攻击 | `fastbin-attacks.md` |
 | unsorted bin、`main_arena` | unsorted bin 攻击 | `unsorted-bin-attacks.md` |
 | House of Spirit/Einherjar/Lore/Apple | House 系列 | `house-of-series.md` |
+| Botcake、perthread_struct、largebin、off-by-one | **Botcake/堆高级** | `botcake.md` |
 | `_IO_FILE`、`stdout`/`stdin` 结构体 | IO_FILE 攻击 | `io-file-attacks.md` |
 | NX/ASLR/PIE/Canary/RELRO | 现代保护机制 | `modern-protections.md` |
 | 内核模块、`/dev/`、`ioctl` | kernel pwn | `kernel-pwn.md` |

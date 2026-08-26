@@ -9,6 +9,7 @@ Cloud（云安全）是 CTF 中分析云服务配置、容器逃逸、Kubernetes
 | Docker 容器、特权模式、挂载 | 容器逃逸 | `container-escape.md` |
 | Kubernetes、Pod、Service Account | K8s 攻击 | `k8s-attacks.md` |
 | AWS/GCP/Azure、元数据服务 | 云服务攻击 | `cloud-services.md` |
+| seccomp、BPF 过滤、syscall 白名单 | **seccomp 绕过** | `seccomp-bypass.md` |
 
 ## Cloud 通用解题流程
 

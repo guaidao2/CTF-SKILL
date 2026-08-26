@@ -321,8 +321,8 @@ class EncodingToolkit:
         """自动识别编码类型"""
         results = []
 
-        # Base64
-        if re.match(r'^[A-Za-z0-9+/]*={0,2}$', data) and len(data) % 4 == 0:
+        # Base64 (允许无填充, 接受任意长度)
+        if re.match(r'^[A-Za-z0-9+/]+=*$', data) and len(data) > 0:
             try:
                 decoded = EncodingToolkit.base64_decode(data)
                 if decoded.isprintable():

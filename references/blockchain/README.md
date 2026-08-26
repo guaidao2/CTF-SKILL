@@ -9,6 +9,7 @@ Blockchain（区块链）是 CTF 中分析智能合约漏洞、攻击 DeFi 协�
 | `call.value`、外部调用、提款函数 | 重入攻击 | `reentrancy.md` |
 | `SafeMath` 缺失、算术运算 | 整数溢出 | `integer-overflow.md` |
 | `tx.origin`、`msg.sender` 误用、权限检查 | 访问控制 | `access-control.md` |
+| 代理合约、EIP-1967、UUPS、存储碰撞 | **Proxy 攻击** | `proxy-attacks.md` |
 | 闪电贷、价格预言机、MEV | DeFi 攻击 | `defi-attacks.md` |
 
 ## Blockchain 通用解题流程

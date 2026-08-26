@@ -130,6 +130,7 @@ ctf/
 │   │   ├── house-of-series.md        ← House of 系列（含 House of Apple 2/3）
 │   │   ├── io-file-attacks.md        ← IO_FILE 利用（glibc 2.34+ 主流）
 │   │   ├── modern-protections.md     ← 现代防护绕过（ASLR/PIE/NX/Canary/RELRO/FORTIFY）
+│   │   ├── botcake.md               ← Botcake/perthread_struct/largebin/off-by-one
 │   │   └── kernel-pwn.md             ← Linux 内核利用
 │   ├── reverse/                      ← 逆向工程
 │   │   ├── README.md
@@ -162,10 +163,12 @@ ctf/
 │   │   ├── reentrancy.md             ← 重入攻击
 │   │   ├── integer-overflow.md       ← 整数溢出
 │   │   ├── access-control.md         ← 访问控制
+│   │   ├── proxy-attacks.md          ← EIP-1967/UUPS 代理攻击
 │   │   └── defi-attacks.md           ← DeFi 攻击（闪电贷/MEV/价格操纵）
 │   └── cloud/                        ← 云安全
 │       ├── README.md
 │       ├── container-escape.md       ← 容器逃逸
+│       ├── seccomp-bypass.md         ← seccomp 绕过
 │       ├── k8s-attacks.md            ← Kubernetes 攻击
 │       └── cloud-services.md         ← 云服务攻击（AWS/GCP/Azure metadata）
 └── scripts/

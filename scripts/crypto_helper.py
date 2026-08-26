@@ -15,6 +15,22 @@ class CryptoHelper:
     # ==================== 数论基础 ====================
 
     @staticmethod
+    def iroot(n: int, k: int) -> Optional[int]:
+        """整数开 k 次方 (Newton 法) — 替代 result**(1/k) 浮点方法, 大数安全"""
+        if n < 0 or k <= 0:
+            return None
+        if k == 1:
+            return n
+        # Newton iteration
+        x = n
+        while True:
+            y = ((k - 1) * x + n // (x ** (k - 1))) // k
+            if y >= x:
+                break
+            x = y
+        return x if pow(x, k) == n else None
+
+    @staticmethod
     def gcd(a: int, b: int) -> int:
         """最大公约数"""
         while b:
@@ -182,12 +198,10 @@ class CryptoHelper:
             result += c_list[i] * Ni * Ni_inv
         result %= N
 
-        # 开 e 次方
-        m = int(round(result ** (1 / e)))
-        # 精确检查
-        for candidate in [m - 1, m, m + 1]:
-            if pow(candidate, e, N) == result % N:
-                return candidate
+        # 整数开 e 次方 (Newton 法, 大数安全)
+        m = CryptoHelper.iroot(result, e)
+        if m is not None:
+            return m
         return None
 
     # ==================== AES 工具 ====================
@@ -208,13 +222,55 @@ class CryptoHelper:
 
     @staticmethod
     def pkcs7_unpad(data: bytes) -> bytes:
-        """PKCS7 去填充"""
+        """PKCS7 去填充 (验证所有填充字节)"""
         if not data:
             return data
         pad_len = data[-1]
-        if pad_len > len(data):
+        if pad_len > len(data) or pad_len == 0:
+            return data
+        # 验证所有填充字节
+        if data[-pad_len:] != bytes([pad_len]) * pad_len:
             return data
         return data[:-pad_len]
+
+    # ==================== AES 加密 ====================
+
+    @staticmethod
+    def aes_ecb_encrypt(key: bytes, plaintext: bytes) -> bytes:
+        """AES ECB 加密"""
+        from Crypto.Cipher import AES
+        cipher = AES.new(key, AES.MODE_ECB)
+        return cipher.encrypt(plaintext)
+
+    @staticmethod
+    def aes_ctr_encrypt(key: bytes, nonce: bytes, plaintext: bytes) -> bytes:
+        """AES CTR 加密 (CTR nonce 16 字节, 默认递增 counter)"""
+        from Crypto.Cipher import AES
+        cipher = AES.new(key, AES.MODE_CTR, nonce=nonce)
+        return cipher.encrypt(plaintext)
+
+    @staticmethod
+    def aes_ctr_decrypt(key: bytes, nonce: bytes, ciphertext: bytes) -> bytes:
+        """AES CTR 解密"""
+        from Crypto.Cipher import AES
+        cipher = AES.new(key, AES.MODE_CTR, nonce=nonce)
+        return cipher.decrypt(ciphertext)
+
+    @staticmethod
+    def aes_gcm_decrypt(key: bytes, nonce: bytes, ciphertext: bytes, tag: bytes) -> bytes:
+        """AES GCM 解密 + 认证验证 (tag 校验)"""
+        from Crypto.Cipher import AES
+        cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+        return cipher.decrypt_and_verify(ciphertext, tag)
+
+    @staticmethod
+    def aes_gcm_encrypt(key: bytes, nonce: bytes, plaintext: bytes) -> Tuple[bytes, bytes]:
+        """AES GCM 加密, 返回 (密文, tag)"""
+        from Crypto.Cipher import AES
+        cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+        ciphertext = cipher.encrypt(plaintext)
+        tag = cipher.digest()
+        return ciphertext, tag
 
     # ==================== 哈希工具 ====================
 
@@ -254,10 +310,12 @@ class CryptoHelper:
         return (a * x + c) % m
 
     @staticmethod
-    def lcg_recover_seed(outputs: List[int], a: int, c: int, m: int) -> int:
+    def lcg_recover_seed(outputs: List[int], a: int, c: int, m: int) -> Optional[int]:
         """恢复 LCG 种子"""
-        x = outputs[0]
-        x = (x - c) * CryptoHelper.mod_inverse(a, m) % m
+        inv_a = CryptoHelper.mod_inverse(a, m)
+        if inv_a is None:
+            return None
+        x = (outputs[0] - c) * inv_a % m
         return x
 
     @staticmethod
