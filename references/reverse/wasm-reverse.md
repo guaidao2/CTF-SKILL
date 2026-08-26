@@ -185,92 +185,606 @@ function callWithString(func, str) {
 
 ## 2024-2026 新技术点
 
-### 1. WASM 新特性
+### 1. WASM SIMD 指令分析
 
-```python
-# WASM 2.0
-# - SIMD 指令
-# - 异常处理
-# - 引用类型
-# - 内存64
-# - 组件模型
+```bash
+# WASM 2.0 SIMD 指令分析
+# SIMD (128-bit 向量操作) 使逆向更复杂
 
-# 各新特性影响逆向
+# 使用 wasm-decompile 查看反编译结果
+wasm-decompile ./simd_module.wasm -o decompiled.dcmp
+
+# 使用 wasm-objdump 反汇编
+wasm-objdump -d ./simd_module.wasm | grep -i "v128\|i32x4\|i64x2\|f32x4\|f64x2"
+
+# SIMD 指令常见于加密/解密函数
+# 特征：v128.load, v128.store, i32x4.add 等
+python3 << 'PYEOF'
+import re
+
+def analyze_simd_usage(wasm_path):
+    """分析 WASM 中的 SIMD 使用"""
+    import subprocess
+    
+    result = subprocess.run(
+        ['wasm-objdump', '-d', wasm_path],
+        capture_output=True, text=True
+    )
+    
+    simd_instructions = {}
+    simd_ops = ['v128', 'i32x4', 'i64x2', 'f32x4', 'f64x2', 'i16x8', 'i8x16']
+    
+    for line in result.stdout.split('\n'):
+        for op in simd_ops:
+            if op in line:
+                simd_instructions.setdefault(op, []).append(line.strip())
+    
+    print(f"[*] SIMD 指令统计:")
+    for op, usages in sorted(simd_instructions.items(), key=lambda x: len(x[1]), reverse=True):
+        print(f"    {op}: {len(usages)} 次")
+    
+    # 如果 SIMD 用于加密，可能是关键算法
+    if simd_instructions:
+        print("[*] SIMD 可能用于：")
+        if any('i32x4' in ops for ops in simd_instructions.values()):
+            print("    - 整数向量运算（可能是加密/哈希）")
+        if any('f32x4' in ops for ops in simd_instructions.values()):
+            print("    - 浮点向量运算（可能是 ML/科学计算）")
+    
+    return simd_instructions
+
+# analyze_simd_usage("module.wasm")
+PYEOF
 ```
 
-### 2. WASM 混淆
+### 2. WASI 系统接口分析
 
-```python
-# 1. 控制流平坦化
-# 2. 虚假控制流
-# 3. 指令替换
-# 4. 字符串加密
-# 5. 自定义 VM
+```bash
+# WASI (WebAssembly System Interface) 分析
+# WASI 模块可以访问文件系统、网络等
+
+# 使用 wasmtime 分析 WASI 模块
+wasmtime --dir=. wasi_module.wasm
+
+# 使用 wasm-tools 分析导入/导出
+wasm-tools component wit wasi_module.wasm 2>/dev/null || \
+wasm-objdump -j Import -x wasi_module.wasm | grep -i "wasi\|fd_\|path_\|env"
+
+# 分析 WASI 能力
+python3 << 'PYEOF'
+import subprocess
+import re
+
+def analyze_wasi_capabilities(wasm_path):
+    """分析 WASI 模块的系统调用能力"""
+    result = subprocess.run(
+        ['wasm-objdump', '-j', 'Import', '-x', wasm_path],
+        capture_output=True, text=True
+    )
+    
+    wasi_imports = {
+        'file_access': [],
+        'network': [],
+        'env_vars': [],
+        'clock': [],
+        'random': [],
+        'process': [],
+    }
+    
+    for line in result.stdout.split('\n'):
+        line_lower = line.lower()
+        
+        # 文件操作
+        if 'fd_' in line_lower or 'path_' in line_lower:
+            wasi_imports['file_access'].append(line.strip())
+        
+        # 网络（通过 wasi-sockets）
+        if 'socket' in line_lower or 'tcp' in line_lower or 'udp' in line_lower:
+            wasi_imports['network'].append(line.strip())
+        
+        # 环境变量
+        if 'environ_get' in line_lower or 'environ_sizes' in line_lower:
+            wasi_imports['env_vars'].append(line.strip())
+        
+        # 时钟
+        if 'clock' in line_lower:
+            wasi_imports['clock'].append(line.strip())
+        
+        # 随机数
+        if 'random' in line_lower:
+            wasi_imports['random'].append(line.strip())
+        
+        # 进程
+        if 'proc_' in line_lower or 'exit' in line_lower:
+            wasi_imports['process'].append(line.strip())
+    
+    print("[*] WASI 能力分析:")
+    for cap, imports in wasi_imports.items():
+        if imports:
+            print(f"  {cap}: {len(imports)} 个导入")
+            for imp in imports[:3]:
+                print(f"    {imp[:100]}")
+    
+    return wasi_imports
+
+# analyze_wasi_capabilities("wasi_module.wasm")
+PYEOF
 ```
 
-### 3. WASM + Native
+### 3. WASM 混淆检测与反混淆
 
 ```python
-# WASM 调用 Native
-# Native 调用 WASM
-# 混合分析
+# WASM 混淆检测和反混淆
+import struct
+import subprocess
+
+class WasmDeobfuscation:
+    """WASM 反混淆"""
+    
+    def __init__(self, wasm_path):
+        self.path = wasm_path
+    
+    def detect_obfuscation(self):
+        """检测混淆类型"""
+        with open(self.path, 'rb') as f:
+            data = f.read()
+        
+        obfuscation_types = []
+        
+        # 检测控制流平坦化 (大量 br_table)
+        br_table_count = data.count(b'\x0e')
+        if br_table_count > 10:
+            obfuscation_types.append(f"控制流平坦化 (br_table: {br_table_count})")
+        
+        # 检测字符串加密 (大量 i32.const + i32.xor 等)
+        xor_count = data.count(b'\x47')  # i32.xor
+        if xor_count > 50:
+            obfuscation_types.append(f"字符串/数据加密 (xor: {xor_count})")
+        
+        # 检测死代码注入
+        unreachable_count = data.count(b'\x00')  # unreachable
+        nop_count = data.count(b'\x01')  # nop
+        
+        if unreachable_count > 20 or nop_count > 50:
+            obfuscation_types.append(f"死代码注入 (unreachable: {unreachable_count}, nop: {nop_count})")
+        
+        # 检测自定义 VM
+        call_indirect_count = data.count(b'\x11')  # call_indirect
+        if call_indirect_count > 20:
+            obfuscation_types.append(f"自定义 VM (call_indirect: {call_indirect_count})")
+        
+        return obfuscation_types
+    
+    def decompile_to_c(self):
+        """反编译为 C 代码"""
+        output_path = self.path.replace('.wasm', '.c')
+        subprocess.run([
+            'wasm2c', self.path, '-o', output_path
+        ], capture_output=True)
+        return output_path
+    
+    def decompile_to_wat(self):
+        """转换为 WAT 文本格式"""
+        output_path = self.path.replace('.wasm', '.wat')
+        subprocess.run([
+            'wasm2wat', self.path, '-o', output_path
+        ], capture_output=True)
+        return output_path
+    
+    def analyze_data_section(self):
+        """分析数据段 (可能包含字符串/常量)"""
+        result = subprocess.run(
+            ['wasm-objdump', '-s', self.path],
+            capture_output=True, text=True
+        )
+        
+        # 提取可打印字符串
+        strings = []
+        for line in result.stdout.split('\n'):
+            # 寻找可打印 ASCII
+            parts = line.strip().split()
+            for part in parts:
+                try:
+                    if all(32 <= ord(c) <= 126 for c in part) and len(part) > 3:
+                        strings.append(part)
+                except:
+                    pass
+        
+        return strings
+
+# 使用
+deobf = WasmDeobfuscation('obfuscated.wasm')
+obf_types = deobf.detect_obfuscation()
+print(f"[*] 检测到混淆: {obf_types}")
+strings = deobf.analyze_data_section()
+print(f"[*] 数据段字符串: {strings[:10]}")
 ```
 
-### 4. WASM 在服务端
+### 4. Frida 动态分析 WASM
 
-```python
-# WASM 作为服务端
-# WASI (WebAssembly System Interface)
-# 新的攻击面
+```javascript
+// Frida 分析 WASM 模块
+// frida -U -l wasm_hook.js -f target_app
+
+// Hook WASM 内存读写
+function hookWasmMemory(instance) {
+    if (instance.exports && instance.exports.memory) {
+        const memory = instance.exports.memory;
+        const view = new Uint8Array(memory.buffer);
+        
+        // 监控内存变化
+        console.log('[*] WASM 内存大小:', memory.buffer.byteLength);
+        
+        // 读取特定地址
+        function readString(addr, maxLen) {
+            let str = '';
+            for (let i = 0; i < maxLen; i++) {
+                const byte = view[addr + i];
+                if (byte === 0) break;
+                str += String.fromCharCode(byte);
+            }
+            return str;
+        }
+        
+        // Hook malloc/free
+        if (instance.exports.malloc) {
+            Interceptor.attach(instance.exports.malloc, {
+                onEnter: function(args) {
+                    this.size = args[0].toInt32();
+                },
+                onLeave: function(retval) {
+                    console.log(`[*] malloc(${this.size}) = ${retval}`);
+                }
+            });
+        }
+        
+        return { view, readString };
+    }
+    return null;
+}
+
+// Hook WebAssembly.instantiate
+const origInstantiate = WebAssembly.instantiate;
+WebAssembly.instantiate = function() {
+    console.log('[*] WebAssembly.instantiate 被调用');
+    return origInstantiate.apply(this, arguments).then(result => {
+        const instance = result.instance || result;
+        const exports = instance.exports || {};
+        
+        console.log('[*] WASM 导出函数:');
+        for (const [name, func] of Object.entries(exports)) {
+            if (typeof func === 'function') {
+                console.log(`    ${name}(${func.length} params)`);
+                
+                // Hook 每个导出函数
+                Interceptor.attach(func, {
+                    onEnter: function(args) {
+                        console.log(`[*] ${name} 被调用`);
+                    },
+                    onLeave: function(retval) {
+                        console.log(`[*] ${name} 返回: ${retval}`);
+                    }
+                });
+            }
+        }
+        
+        return result;
+    });
+};
+
+// Hook WASM 线性内存操作
+function dumpWasmMemory(instance, addr, size) {
+    const memory = instance.exports.memory;
+    const view = new Uint8Array(memory.buffer);
+    const data = view.slice(addr, addr + size);
+    console.log(`[*] 内存 dump [${addr}..${addr + size}]:`);
+    console.log(Array.from(data).map(b => b.toString(16).padStart(2, '0')).join(' '));
+    return data;
+}
 ```
 
-### 5. WASM 在区块链
+### 5. WASM 区块链智能合约逆向
 
 ```python
-# 智能合约使用 WASM
-# Polkadot
-# EOS
-# 各区块链平台
+# 分析 WASM 智能合约 (Polkadot/EOS/Near)
+import subprocess
+import json
+
+class WasmContractAnalysis:
+    """WASM 智能合约逆向"""
+    
+    def __init__(self, wasm_path):
+        self.path = wasm_path
+    
+    def analyze_polkadot_contract(self):
+        """分析 Polkadot WASM 合约"""
+        # Polkadot 合约使用 ink! 语言编译
+        # 关键导出函数：
+        # - call — 合约入口
+        # - deploy — 部署入口
+        # - seal_* — 系统调用
+        
+        result = subprocess.run(
+            ['wasm-objdump', '-x', self.path],
+            capture_output=True, text=True
+        )
+        
+        exports = []
+        imports = []
+        for line in result.stdout.split('\n'):
+            if 'Export' in line and 'func' in line:
+                exports.append(line.strip())
+            if 'Import' in line and 'seal_' in line:
+                imports.append(line.strip())
+        
+        print("[*] Polkadot 合约分析:")
+        print(f"    导出函数: {len(exports)}")
+        for exp in exports:
+            print(f"      {exp}")
+        
+        print(f"    系统调用: {len(imports)}")
+        seal_funcs = [i for i in imports if 'seal_' in i]
+        for seal in seal_funcs[:10]:
+            print(f"      {seal}")
+        
+        return exports, imports
+    
+    def analyze_eos_contract(self):
+        """分析 EOS WASM 合约"""
+        # EOS 合约导出 apply 函数
+        result = subprocess.run(
+            ['wasm-objdump', '-x', self.path],
+            capture_output=True, text=True
+        )
+        
+        has_apply = 'apply' in result.stdout
+        print(f"[*] EOS 合约 (apply 导出: {has_apply})")
+        
+        return has_apply
+    
+    def find_vulnerabilities(self):
+        """查找常见漏洞"""
+        # 1. 整数溢出
+        # 2. 未检查的外部调用
+        # 3. 权限检查缺失
+        # 4. 重入攻击
+        
+        with open(self.path, 'rb') as f:
+            data = f.read()
+        
+        vulns = []
+        
+        # 检查是否有权限检查 (auth_check)
+        if b'auth_check' not in data and b'seal_caller_is_contract' not in data:
+            vulns.append("缺少权限检查")
+        
+        # 检查是否有余额检查
+        if b'balance_of' not in data and b'seal_balance' not in data:
+            vulns.append("可能缺少余额检查")
+        
+        return vulns
+
+# 使用
+analyzer = WasmContractAnalysis('contract.wasm')
+analyzer.analyze_polkadot_contract()
+vulns = analyzer.find_vulnerabilities()
+if vulns:
+    print(f"[!] 潜在漏洞: {vulns}")
 ```
 
-### 6. WASM 在边缘计算
+### 6. WASM 组件模型 (Component Model) 分析
 
 ```python
-# Cloudflare Workers
-# Fastly Compute@Edge
-# 各边缘计算平台
+# WASM Component Model — 新的模块化标准
+import subprocess
+
+def analyze_component_model(wasm_path):
+    """分析 WASM 组件模型"""
+    
+    # 使用 wasm-tools 分析
+    result = subprocess.run(
+        ['wasm-tools', 'component', 'wit', wasm_path],
+        capture_output=True, text=True
+    )
+    
+    if result.returncode == 0:
+        print("[*] WASM Component Model WIT 接口:")
+        print(result.stdout[:2000])
+    else:
+        print("[*] 不是组件模型模块，使用传统分析")
+    
+    # 分析组件的导入/导出
+    result = subprocess.run(
+        ['wasm-tools', 'component', 'encode', wasm_path, '--dry-run'],
+        capture_output=True, text=True
+    )
+    
+    return result.stdout
+
+# Component Model 特征：
+# - 使用 WIT (WebAssembly Interface Types) 描述接口
+# - 支持多种语言互操作
+# - 可以嵌套组件
 ```
 
-### 7. WASM 在 AI
+### 7. WASM 调试与符号恢复
 
-```python
-# WASM 运行 ML 模型
-# TensorFlow.js
-# ONNX Runtime Web
+```bash
+# WASM 调试信息分析
+
+# 1. 使用 --debug-info 编译 WASM
+# clang --target=wasm32 -g -o debug.wasm source.c
+
+# 2. 使用 wasm-objdump 查看调试段
+wasm-objdump -x debug.wasm | grep -i "debug\|name\|custom"
+
+# 3. 使用 chrome DevTools 调试
+# chrome://inspect → Open dedicated DevTools for Node
+# 或在 Edge/Chrome 中加载 WASM 页面
+
+# 4. 使用 wasmtime 调试
+wasmtime --debug-info debug.wasm
+
+# 5. 符号恢复脚本
+python3 << 'PYEOF'
+import subprocess
+
+def recover_symbols(wasm_path):
+    """尝试恢复 WASM 符号"""
+    
+    # 1. 查找 name section (函数名)
+    result = subprocess.run(
+        ['wasm-objdump', '-j', 'name', '-x', wasm_path],
+        capture_output=True, text=True
+    )
+    
+    symbols = {}
+    for line in result.stdout.split('\n'):
+        if 'func' in line.lower():
+            # 解析函数名
+            parts = line.strip().split()
+            if len(parts) >= 3:
+                idx = parts[0]
+                name = parts[-1].strip('"')
+                symbols[idx] = name
+    
+    print(f"[*] 恢复的符号: {len(symbols)}")
+    for idx, name in list(symbols.items())[:20]:
+        print(f"    [{idx}] {name}")
+    
+    # 2. 查找自定义段
+    result = subprocess.run(
+        ['wasm-objdump', '-x', wasm_path],
+        capture_output=True, text=True
+    )
+    
+    custom_sections = []
+    for line in result.stdout.split('\n'):
+        if 'custom' in line.lower():
+            custom_sections.append(line.strip())
+    
+    if custom_sections:
+        print(f"\n[*] 自定义段:")
+        for section in custom_sections:
+            print(f"    {section}")
+    
+    return symbols
+
+# recover_symbols("module.wasm")
+PYEOF
 ```
 
-### 8. WASM 在游戏
+### 8. WASM 反混淆自动化工具链
 
-```python
-# Unity WebGL
-# Unreal Engine HTML5
-# 各游戏引擎
-```
+```bash
+# WASM 反混淆自动化工具链
+# 完整分析流程
 
-### 9. AI 辅助逆向
+# Step 1: 提取和分类
+wasm-objdump -x module.wasm > sections.txt
+wasm-objdump -d module.wasm > disassembly.txt
+wasm-decompile module.wasm > decompiled.dcmp
+wasm2wat module.wasm > module.wat
 
-```python
-# LLM 辅助
-# - 反编译
-# - 算法识别
-# - 代码理解
-```
+# Step 2: 分析导出函数
+grep "Export" sections.txt
+echo "---"
+grep "func" module.wat | head -20
 
-### 10. 新型工具
+# Step 3: 查找关键函数
+grep -n "export" module.wat | head -20
 
-```python
-# 持续有新的 WASM 工具出现
-# 关注最新研究
+# Step 4: 使用 Ghidra 分析
+# 安装 Ghidra WASM 插件
+# https://github.com/nneonneo/ghidra-wasm-plugin
+# 然后在 Ghidra 中打开 .wasm 文件
+
+# Step 5: 动态分析
+# 使用 Node.js 加载和 hook
+node << 'JSEOF'
+const fs = require('fs');
+const wasmBuffer = fs.readFileSync('module.wasm');
+
+WebAssembly.instantiate(wasmBuffer, {
+    env: { memory: new WebAssembly.Memory({ initial: 256 }) },
+    // 提供必要的导入
+}).then(result => {
+    const exports = result.instance.exports;
+    console.log('Exports:', Object.keys(exports));
+    
+    // 调用导出函数
+    for (const [name, fn] of Object.entries(exports)) {
+        if (typeof fn === 'function') {
+            console.log(`Calling ${name}...`);
+            try {
+                const result = fn(42);
+                console.log(`  Result: ${result}`);
+            } catch(e) {
+                console.log(`  Error: ${e.message}`);
+            }
+        }
+    }
+});
+JSEOF
+
+# Step 6: Python 自动化分析
+python3 << 'PYEOF'
+import subprocess
+import re
+
+def auto_analyze_wasm(wasm_path):
+    """WASM 自动化分析"""
+    
+    # 获取段信息
+    result = subprocess.run(
+        ['wasm-objdump', '-x', wasm_path],
+        capture_output=True, text=True
+    )
+    
+    analysis = {
+        'imports': [],
+        'exports': [],
+        'data_sections': [],
+        'functions': 0,
+        'tables': 0,
+        'memories': 0,
+    }
+    
+    for line in result.stdout.split('\n'):
+        if 'Import' in line:
+            analysis['imports'].append(line.strip())
+        if 'Export' in line:
+            analysis['exports'].append(line.strip())
+        if 'func' in line:
+            analysis['functions'] += 1
+        if 'table' in line.lower():
+            analysis['tables'] += 1
+        if 'memory' in line.lower():
+            analysis['memories'] += 1
+    
+    print(f"[*] WASM 分析结果:")
+    print(f"    函数: {analysis['functions']}")
+    print(f"    导入: {len(analysis['imports'])}")
+    print(f"    导出: {len(analysis['exports'])}")
+    print(f"    表: {analysis['tables']}")
+    print(f"    内存: {analysis['memories']}")
+    
+    # 分析数据段中的字符串
+    result = subprocess.run(
+        ['wasm-objdump', '-s', wasm_path],
+        capture_output=True, text=True
+    )
+    
+    strings = re.findall(r'[\x20-\x7e]{5,}', result.stdout)
+    if strings:
+        print(f"\n[*] 发现 {len(strings)} 个字符串:")
+        for s in strings[:20]:
+            print(f"    {s}")
+    
+    return analysis
+
+auto_analyze_wasm("module.wasm")
+PYEOF
 ```
 
 ## 工具推荐

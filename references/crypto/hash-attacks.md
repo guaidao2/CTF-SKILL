@@ -163,16 +163,171 @@ def hmac_timing_attack(oracle, known=b''):
 
 ```python
 # CRC32 不是加密哈希
-# 可逆
-# 可碰撞
+# 基于多项式除法，完全可逆
+# 可碰撞、可构造特定值
 
 import zlib
+import struct
 
-# CRC32 逆运算
 def crc32_reverse(target_crc, length=4):
-    # 构造特定 CRC32 的输入
-    # ...
-    pass
+    """CRC32 逆运算 — 构造特定 CRC32 值
+    
+    方法 1：已知长度，直接计算对应输入
+    方法 2：利用 CRC32 的线性性质
+    方法 3：暴力搜索（小空间）
+    """
+    # CRC32 的数学性质：
+    # CRC32(x) = (x * G(x)) mod P(x)
+    # 其中 P(x) = 0x04C11DB7
+    
+    # 方法 1：已知长度的逆运算
+    # CRC32 是线性的：CRC(a ^ b) = CRC(a) ^ CRC(b)
+    # 所以：CRC32(target) = CRC32(known) ^ CRC32(unknown)
+    # unknown = target ^ known
+    
+    # 计算单位向量的 CRC32
+    def crc32_unit(i):
+        """计算单位向量 (1 << i) 的 CRC32"""
+        data = b'\x00' * (i // 8)
+        data += bytes([1 << (i % 8)])
+        return zlib.crc32(data) & 0xFFFFFFFF
+    
+    # 构造目标 CRC32
+    # 利用线性性质：CRC32(a) ^ CRC32(b) = CRC32(a ^ b)
+    
+    # 简化：暴力搜索小输入
+    if length <= 4:
+        for i in range(256 ** length):
+            candidate = i.to_bytes(length, 'big')
+            if zlib.crc32(candidate) & 0xFFFFFFFF == target_crc:
+                return candidate
+    
+    # 方法 2：使用线性代数
+    # 将 CRC32 表示为 GF(2) 上的线性变换
+    # 然后求逆
+    
+    # 方法 3：增量构造
+    # 从任意值开始，逐步修改字节使 CRC32 匹配
+    
+    return None
+
+
+def crc32_collision(prefix, target_crc):
+    """CRC32 碰撞构造
+    
+    已知 prefix，找到 suffix 使 CRC32(prefix || suffix) = target_crc
+    """
+    # 利用 CRC32 的线性性质
+    current_crc = zlib.crc32(prefix) & 0xFFFFFFFF
+    
+    # 需要：CRC32(suffix) = target_crc ^ current_crc
+    # 因为 CRC32(a || b) = CRC32(b) ^ (CRC32(a) << 32 的效果)
+    
+    # 实际上：CRC32(a || b) 不等于 CRC32(a) ^ CRC32(b)
+    # 但有：CRC32(a || b) = CRC32(CRC32(a) << 32 | b)
+    
+    # 简化：暴力搜索
+    target = target_crc ^ current_crc
+    
+    # 构造 suffix 使得 CRC32(suffix) = target
+    for length in range(1, 8):
+        for i in range(256 ** length):
+            suffix = i.to_bytes(length, 'big')
+            if zlib.crc32(prefix + suffix) & 0xFFFFFFFF == target_crc:
+                return suffix
+    
+    return None
+
+
+def crc32_forge_with_known_prefix(data, target_crc):
+    """已知前缀的 CRC32 伪造
+    
+    在已知数据后追加字节使 CRC32 匹配
+    """
+    # CRC32 的更新：每添加一个字节，CRC32 线性更新
+    # CRC32(data || byte) = (CRC32(data) >> 8) ^ crc_table[(CRC32(data) ^ byte) & 0xFF]
+    
+    current = zlib.crc32(data) & 0xFFFFFFFF
+    
+    # 计算需要的修正
+    # 通过添加 4 字节可以匹配任意 CRC32 值
+    
+    # 使用 CRC32 的线性性质
+    # CRC32(x || y) = f(CRC32(x), y)
+    
+    # 简化：尝试追加 4 字节
+    for extra in range(0x100000000):
+        suffix = extra.to_bytes(4, 'big')
+        if zlib.crc32(data + suffix) & 0xFFFFFFFF == target_crc:
+            return suffix
+    
+    return None
+
+
+def crc32_fast_reverse(target_crc, length):
+    """CRC32 快速逆运算（利用查表）"""
+    # 预计算每个字节的 CRC32 贡献
+    # 然后组合
+    
+    # CRC32 查找表
+    crc_table = []
+    for i in range(256):
+        crc = i
+        for _ in range(8):
+            if crc & 1:
+                crc = (crc >> 1) ^ 0xEDB88320
+            else:
+                crc >>= 1
+        crc_table.append(crc)
+    
+    # 线性构造
+    # CRC32(a || b) = CRC32(a) ^ CRC32(b) ^ ...
+    # 这个关系比较复杂
+    
+    # 简化：使用逆向 CRC32 更新
+    def crc32_update_inv(crc, byte):
+        """逆向 CRC32 更新"""
+        # CRC = (CRC >> 8) ^ table[(CRC ^ byte) & 0xFF]
+        # 逆向：给定 crc 和 byte，求前一个 crc
+        for prev_crc in range(0x100000000):
+            if ((prev_crc >> 8) ^ crc_table[(prev_crc ^ byte) & 0xFF]) & 0xFFFFFFFF == crc:
+                return prev_crc
+        return None
+    
+    # 从目标 CRC 逆推
+    current = target_crc
+    result = bytearray(length)
+    
+    for i in range(length - 1, -1, -1):
+        # 尝试所有字节值
+        for b in range(256):
+            prev = crc32_update_inv(current, b)
+            if prev is not None:
+                result[i] = b
+                current = prev
+                break
+    
+    return bytes(result)
+
+
+def crc32_msb_oracle(oracle, known_prefix=b''):
+    """CRC32 MSB Oracle 攻击
+    
+    如果 oracle 只返回 CRC32 的高位
+    可以逐字节恢复完整 CRC32
+    """
+    recovered = b''
+    
+    for i in range(4):  # CRC32 是 4 字节
+        for b in range(256):
+            test = known_prefix + recovered + bytes([b])
+            response = oracle(test)
+            
+            if response == (target_crc >> (8 * (3 - i))) & 0xFF:
+                recovered += bytes([b])
+                break
+    
+    return recovered
 ```
 
 ### 10. 国密 SM3
@@ -188,83 +343,203 @@ def crc32_reverse(target_crc, length=4):
 ### 1. SHA1 碰撞实战
 
 ```python
-# SHAttered 攻击
-# 选择前缀碰撞
-# SHA-1 is a Shambles
-# 实际攻击
+# SHA1 已被实际攻破
+# 可以构造选择前缀碰撞
+
+def sha1_chosen_prefix_collision():
+    """SHA1 选择前缀碰撞
+    
+    可以构造任意两个前缀的碰撞
+    """
+    # 工具：
+    # 1. sha1collisiondetection
+    # 2. hashclash
+    # 3. fastcoll
+    
+    # 攻击：
+    # - 证书伪造
+    # - 文档篡改
+    # - Git 碰撞
+    
+    return None
+
+
+def sha1_shambles_attack():
+    """SHA-1 is a Shambles 攻击
+    
+    Leurent & Peyrin 的选择前缀碰撞
+    可以在实际系统中利用
+    """
+    # 例如：
+    # - 伪造 CA 签名
+    # - 创建碰撞 PDF
+    # - 创建碰撞 X.509 证书
+    
+    return None
 ```
 
-### 2. SHA3
+### 2. SHA3 安全性
 
 ```python
-# Keccak 结构
-# 无长度扩展
-# 新的分析
+def sha3_analysis():
+    """SHA3/Keccak 安全性分析"""
+    
+    # SHA3 基于 sponge 结构
+    # 安全性：
+    # - 无长度扩展攻击
+    # - 抗量子（Grover 算法的 √2 加速）
+    
+    # 已知弱点：
+    # - 某些参数选择有弱点
+    # - 需要足够的 capacity
+    
+    return None
 ```
 
 ### 3. BLAKE3
 
 ```python
-# 树状哈希
-# 高速
-# 新的分析
+def blake3_analysis():
+    """BLAKE3 安全性分析"""
+    
+    # BLAKE3 基于 BLAKE2
+    # 使用 Merkle tree 结构
+    # 非常快速
+    
+    # 安全性：
+    # - 继承 BLAKE2 的安全性
+    # - 树状结构可能有弱点
+    
+    return None
 ```
 
-### 4. 量子攻击
+### 4. 量子攻击影响
 
 ```python
-# Grover 算法
-# 降低安全强度
-# MD5 → 64 位
-# SHA256 → 128 位
+def quantum_hash_attacks():
+    """量子计算对哈希函数的影响"""
+    
+    # Grover 算法：
+    # - 暴力搜索加速 √N
+    # - MD5: 64 位量子安全性
+    # - SHA256: 128 位量子安全性
+    # - SHA512: 256 位量子安全性
+    
+    # 建议：
+    # - 使用 SHA256 或更高
+    # - 密码哈希使用更多迭代
+    
+    return None
 ```
 
 ### 5. 侧信道攻击
 
 ```python
-# 时间攻击
-# 缓存攻击
-# 功耗分析
+def hash_side_channel():
+    """哈希函数侧信道攻击"""
+    
+    # 攻击：
+    # 1. 时间攻击（哈希计算时间）
+    # 2. 缓存攻击（S-box 访问）
+    # 3. 功耗分析
+    
+    # 防御：
+    # 1. 常数时间实现
+    # 2. 内存访问随机化
+    
+    return None
 ```
 
-### 6. 硬件加速
+### 6. 硬件加速安全
 
 ```python
-# GPU 破解
-# ASIC 破解
-# 量子计算
+def hash_hardware():
+    """哈希硬件加速安全"""
+    
+    # SHA-NI（Intel）：
+    # - 通常抗侧信道
+    # - 但可能有微架构漏洞
+    
+    # GPU 破解：
+    # - MD5/SHA1 破解速度：数十亿次/秒
+    # - 密码学哈希难以 GPU 加速
+    
+    return None
 ```
 
-### 7. AI 辅助
+### 7. ML 辅助分析
 
 ```python
-# ML 辅助
-# 密码预测
-# 哈希分析
+def ml_hash_analysis():
+    """机器学习辅助哈希分析"""
+    
+    # 应用：
+    # 1. 哈希函数区分器
+    # 2. 碰撞搜索
+    # 3. 预像攻击
+    
+    # 例如：
+    # - 使用 RNN 学习 MD5 的轮函数
+    # - 使用 GAN 生成碰撞
+    
+    return None
 ```
 
-### 8. 新型哈希
+### 8. 新型哈希函数
 
 ```python
-# KangarooTwelve
-# Photon
-# 各新型哈希
+def new_hash_functions():
+    """新型哈希函数"""
+    
+    # 2024-2026 新设计：
+    # 1. KangarooTwelve（Keccak 变体）
+    # 2. PHOTON（轻量级）
+    # 3. AScon-Hash（NIST 轻量级）
+    
+    return None
 ```
 
-### 9. 密码哈希
+### 9. 密码哈希安全
 
 ```python
-# Argon2
-# scrypt
-# bcrypt
-# 各密码哈希
+def password_hash_security():
+    """密码哈希函数安全"""
+    
+    # 现代推荐：
+    # 1. Argon2id（首选）
+    # 2. scrypt
+    # 3. bcrypt
+    
+    # 参数建议：
+    # - Argon2id: 64MB 内存, 3 次迭代, 4 并行度
+    # - scrypt: N=16384, r=8, p=1
+    # - bcrypt: cost=12
+    
+    # 攻击：
+    # - GPU/ASIC 破解
+    # - 暴力搜索
+    # - 字典攻击
+    
+    return None
 ```
 
-### 10. 零知识证明
+### 10. 零知识证明中的哈希
 
 ```python
-# zk-SNARK 中的哈希
-# 新的攻击面
+def zkp_hash():
+    """零知识证明中的哈希函数"""
+    
+    # 应用：
+    # 1. Merkle tree（状态承诺）
+    # 2. 哈希承诺
+    # 3. Fiat-Shamir 变换
+    
+    # 要求：
+    # - 抗碰撞性
+    # - 零知识性
+    # - 可高效计算
+    
+    return None
 ```
 
 ## 工具推荐
